@@ -55,6 +55,8 @@ import {
 } from "@/components/ui/popover";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { usePointerCoarse } from "@/components/ui/hooks/use-pointer-coarse";
+import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
 import { cn } from "@/lib/utils";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
@@ -189,12 +191,19 @@ function formatWhen(ms: number): string {
 // Fill-in dialog for {{token}} templates
 // ---------------------------------------------------------------------------
 
+interface FillInRequest {
+  text: string;
+  title: string;
+  /** Receives the filled text; the dialog closes either way. */
+  complete: (filled: string) => void;
+}
+
 function FillInDialog({
   request,
   onDone,
   onCancel,
 }: {
-  request: { text: string; title: string } | null;
+  request: FillInRequest | null;
   onDone: (filled: string) => void;
   onCancel: () => void;
 }) {
@@ -451,6 +460,7 @@ function PromptRow({
   refresh,
   dragHandlers,
   isDragTarget,
+  alwaysShowActions,
 }: {
   prompt: PromptDto;
   index: number;
@@ -469,6 +479,7 @@ function PromptRow({
     onDrop: () => void;
   };
   isDragTarget: boolean;
+  alwaysShowActions: boolean;
 }) {
   const [targets, setTargets] = useState<{ id: string; title: string }[]>([]);
 
@@ -540,7 +551,10 @@ function PromptRow({
     >
       <Icon
         name="DragDropVertical"
-        className="mt-1 size-3 shrink-0 cursor-grab text-muted-foreground/40 opacity-0 group-hover:opacity-100"
+        className={cn(
+          "mt-1 size-3 shrink-0 cursor-grab text-muted-foreground/40 group-hover:opacity-100",
+          alwaysShowActions ? "opacity-100" : "opacity-0",
+        )}
         aria-hidden
       />
       <button
@@ -577,7 +591,12 @@ function PromptRow({
           ) : null}
         </span>
       </button>
-      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+      <div
+        className={cn(
+          "flex shrink-0 items-center gap-0.5 transition-opacity focus-within:opacity-100 group-hover:opacity-100",
+          alwaysShowActions ? "opacity-100" : "opacity-0",
+        )}
+      >
         {canArm ? (
           <Button
             size="icon"
@@ -682,15 +701,19 @@ function PromptRow({
 function SnippetRow({
   snippet,
   onInsert,
+  onQueue,
   onEdit,
   rpc,
   refresh,
+  alwaysShowActions,
 }: {
   snippet: SnippetDto;
   onInsert: ((snippet: SnippetDto) => void) | null;
+  onQueue: (snippet: SnippetDto) => void;
   onEdit: (snippet: SnippetDto) => void;
   rpc: Rpc;
   refresh: () => void;
+  alwaysShowActions: boolean;
 }) {
   async function remove(): Promise<void> {
     await rpc.call("deleteSnippet", { id: snippet.id });
@@ -719,9 +742,8 @@ function SnippetRow({
       <button
         type="button"
         className="min-w-0 flex-1 text-left"
-        onClick={() => onInsert?.(snippet)}
-        disabled={onInsert === null}
-        title={onInsert ? "Insert into the composer" : undefined}
+        onClick={() => (onInsert ? onInsert(snippet) : onQueue(snippet))}
+        title={onInsert ? "Insert into the composer" : "Add to queue"}
       >
         <span className="flex items-center gap-1.5 text-sm text-foreground">
           <span className="truncate font-medium">{snippet.title}</span>
@@ -742,7 +764,12 @@ function SnippetRow({
           {previewText(snippet.body)}
         </span>
       </button>
-      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+      <div
+        className={cn(
+          "flex shrink-0 items-center gap-0.5 transition-opacity focus-within:opacity-100 group-hover:opacity-100",
+          alwaysShowActions ? "opacity-100" : "opacity-0",
+        )}
+      >
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -761,6 +788,10 @@ function SnippetRow({
                 Insert into composer
               </DropdownMenuItem>
             ) : null}
+            <DropdownMenuItem onSelect={() => onQueue(snippet)}>
+              <Icon name="ListTodo" className="size-4" aria-hidden />
+              Add to queue
+            </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => onEdit(snippet)}>
               <Icon name="Edit" className="size-4" aria-hidden />
               Edit
@@ -807,11 +838,10 @@ function QueueView({
   const [editText, setEditText] = useState("");
   const [scheduling, setScheduling] = useState<PromptDto | null>(null);
   const [snippetDraft, setSnippetDraft] = useState<SnippetDraft | null>(null);
-  const [fillIn, setFillIn] = useState<{
-    text: string;
-    title: string;
-    consume: { promptId: string } | { snippetId: string } | null;
-  } | null>(null);
+  const [fillIn, setFillIn] = useState<FillInRequest | null>(null);
+  const pointerCoarse = usePointerCoarse();
+  const compactViewport = useIsCompactViewport();
+  const alwaysShowActions = pointerCoarse || compactViewport;
   const [snippets, setSnippets] = useState<SnippetDto[]>([]);
   const dragFrom = useRef<number | null>(null);
   const [dragOver, setDragOver] = useState<number | null>(null);
@@ -864,17 +894,19 @@ function QueueView({
   }
 
   function injectPrompt(prompt: PromptDto): void {
-    const tokens = extractTokens(prompt.text);
-    if (tokens.length > 0) {
+    const deliver = (text: string) => {
+      if (!deliverText(text)) return;
+      consumeAfterInject(prompt.id);
+    };
+    if (extractTokens(prompt.text).length > 0) {
       setFillIn({
         text: prompt.text,
         title: previewText(prompt.text).slice(0, 40),
-        consume: { promptId: prompt.id },
+        complete: deliver,
       });
       return;
     }
-    if (!deliverText(prompt.text)) return;
-    consumeAfterInject(prompt.id);
+    deliver(prompt.text);
   }
 
   function consumeAfterInject(promptId: string): void {
@@ -890,31 +922,54 @@ function QueueView({
     });
   }
 
-  function insertSnippet(snippet: SnippetDto): void {
-    const tokens = extractTokens(snippet.body);
-    if (tokens.length > 0) {
-      setFillIn({
-        text: snippet.body,
-        title: snippet.title,
-        consume: { snippetId: snippet.id },
-      });
+  function withFillIns(
+    text: string,
+    title: string,
+    deliver: (filled: string) => void,
+  ): void {
+    if (extractTokens(text).length > 0) {
+      setFillIn({ text, title, complete: deliver });
       return;
     }
-    if (!deliverText(snippet.body)) return;
-    void rpc.call("useSnippet", { id: snippet.id });
-    toast.success(`“${snippet.title}” inserted`);
+    deliver(text);
+  }
+
+  function insertSnippet(snippet: SnippetDto): void {
+    withFillIns(snippet.body, snippet.title, (filled) => {
+      if (!deliverText(filled)) return;
+      void rpc.call("useSnippet", { id: snippet.id });
+      toast.success(`“${snippet.title}” inserted`);
+    });
+  }
+
+  /** Snippet → queue: works everywhere, composer or not. */
+  function queueSnippet(snippet: SnippetDto): void {
+    withFillIns(snippet.body, snippet.title, (filled) => {
+      const scope = threadId === null ? "global" : "thread";
+      void rpc
+        .call("addPrompt", {
+          text: filled,
+          scope,
+          threadId,
+          autoSend: false,
+        })
+        .then(() => {
+          void rpc.call("useSnippet", { id: snippet.id });
+          refresh();
+          toast.success(
+            scope === "thread"
+              ? `“${snippet.title}” queued for this thread`
+              : `“${snippet.title}” queued globally`,
+          );
+        })
+        .catch(() => toast.error("Failed to queue the snippet"));
+    });
   }
 
   function completeFillIn(filled: string): void {
     const request = fillIn;
     setFillIn(null);
-    if (request === null || !deliverText(filled)) return;
-    if (request.consume && "promptId" in request.consume) {
-      consumeAfterInject(request.consume.promptId);
-    } else if (request.consume && "snippetId" in request.consume) {
-      void rpc.call("useSnippet", { id: request.consume.snippetId });
-      toast.success(`“${request.title}” inserted`);
-    }
+    request?.complete(filled);
   }
 
   // ---- add / edit / restore ----
@@ -1141,7 +1196,15 @@ function QueueView({
         ) : null}
       </div>
 
-      <div className={cn("max-h-72 flex-1 overflow-y-auto p-1", listClassName)}>
+      <div
+        className={cn(
+          "flex-1 overflow-y-auto p-1",
+          // In the compact-viewport drawer the shell owns scrolling; a fixed
+          // inner cap would clip the list bottom instead.
+          compactViewport ? "max-h-none" : "max-h-72",
+          listClassName,
+        )}
+      >
         {activeTab === "snippets" ? (
           snippets.length === 0 ? (
             <p className="px-3 py-6 text-center text-sm text-muted-foreground">
@@ -1155,6 +1218,8 @@ function QueueView({
                 key={snippet.id}
                 snippet={snippet}
                 onInsert={onInsertText === null ? null : insertSnippet}
+                onQueue={queueSnippet}
+                alwaysShowActions={alwaysShowActions}
                 onEdit={(entry) =>
                   setSnippetDraft({
                     id: entry.id,
@@ -1233,6 +1298,7 @@ function QueueView({
               refresh={refresh}
               dragHandlers={dragHandlers}
               isDragTarget={dragOver === index}
+              alwaysShowActions={alwaysShowActions}
             />
           ))
         )}
