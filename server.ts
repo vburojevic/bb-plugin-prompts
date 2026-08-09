@@ -38,7 +38,7 @@ const promptSchema = z.object({
   updatedAt: z.number(),
   usedAt: z.number().nullable(),
   usedVia: z
-    .enum(["inject", "auto-send", "cli", "scheduled", "cross-thread"])
+    .enum(["inject", "auto-send", "cli", "scheduled", "cross-thread", "bb-queue"])
     .nullable(),
 });
 
@@ -132,6 +132,30 @@ export const rpcContract = defineRpcContract({
   },
   sendPromptToThread: {
     input: z.object({ id: z.string(), threadId: z.string() }).strict(),
+    output: z.object({ sent: z.boolean(), error: z.string().nullable() }),
+  },
+  listNativeQueue: {
+    input: z.object({ threadId: z.string() }).strict(),
+    output: z.object({
+      items: z.array(
+        z.object({ id: z.string(), text: z.string(), updatedAt: z.number() }),
+      ),
+    }),
+  },
+  pushToNativeQueue: {
+    input: z.object({ id: z.string(), threadId: z.string() }).strict(),
+    output: z.object({ pushed: z.boolean(), error: z.string().nullable() }),
+  },
+  stashNativeMessage: {
+    input: z
+      .object({ threadId: z.string(), queuedMessageId: z.string() })
+      .strict(),
+    output: z.object({ prompt: promptSchema.nullable(), error: z.string().nullable() }),
+  },
+  sendNativeNow: {
+    input: z
+      .object({ threadId: z.string(), queuedMessageId: z.string() })
+      .strict(),
     output: z.object({ sent: z.boolean(), error: z.string().nullable() }),
   },
   listSnippets: {
@@ -362,6 +386,90 @@ export default function plugin(bb: BbPluginApi) {
         return { sent: false, error: "Prompt is no longer queued." };
       return sendPrompt(prompt, threadId, "cross-thread");
     },
+    async listNativeQueue({ threadId }) {
+      const messages = await bb.sdk.threads.queuedMessages.list({ threadId });
+      return {
+        items: messages.map((message) => ({
+          id: message.id,
+          text: message.content
+            .filter(
+              (part): part is Extract<typeof part, { type: "text" }> =>
+                part.type === "text",
+            )
+            .map((part) => part.text)
+            .join("\n"),
+          updatedAt: message.updatedAt,
+        })),
+      };
+    },
+    async pushToNativeQueue({ id, threadId }) {
+      const claimed = store.claimPrompt(id, "bb-queue");
+      if (!claimed) return { pushed: false, error: "Prompt is no longer queued." };
+      try {
+        await bb.sdk.threads.queuedMessages.create({
+          threadId,
+          input: [{ type: "text", text: claimed.text, mentions: [] }],
+        });
+        store.pruneUsed(USED_KEEP);
+        notify(claimed.threadId);
+        return { pushed: true, error: null };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        store.requeuePrompt(claimed.id, message);
+        notify(claimed.threadId);
+        return { pushed: false, error: message };
+      }
+    },
+    async stashNativeMessage({ threadId, queuedMessageId }) {
+      const messages = await bb.sdk.threads.queuedMessages.list({ threadId });
+      const message = messages.find((entry) => entry.id === queuedMessageId);
+      if (!message) return { prompt: null, error: "Message is no longer queued." };
+      const text = message.content
+        .filter(
+          (part): part is Extract<typeof part, { type: "text" }> =>
+            part.type === "text",
+        )
+        .map((part) => part.text)
+        .join("\n")
+        .trim();
+      if (!text)
+        return { prompt: null, error: "Only text messages can be stashed." };
+      // Copy first, then delete — a failed delete leaves a duplicate (safe),
+      // the other order could lose the message.
+      const prompt = store.addPrompt({
+        text,
+        scope: "thread",
+        threadId,
+        autoSend: false,
+      });
+      try {
+        await bb.sdk.threads.queuedMessages.delete({ threadId, queuedMessageId });
+      } catch (error) {
+        db.prepare(`DELETE FROM prompts WHERE id = ?`).run(prompt.id);
+        return {
+          prompt: null,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      notify(threadId);
+      return { prompt, error: null };
+    },
+    async sendNativeNow({ threadId, queuedMessageId }) {
+      try {
+        await bb.sdk.threads.queuedMessages.send({
+          threadId,
+          queuedMessageId,
+          mode: "auto",
+        });
+        notify(threadId);
+        return { sent: true, error: null };
+      } catch (error) {
+        return {
+          sent: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
     listSnippets({ query }) {
       return { snippets: store.listSnippets(query) };
     },
@@ -482,6 +590,11 @@ export default function plugin(bb: BbPluginApi) {
         usage: "bb prompts add [-g] [--arm] [--at <when>] <text…>",
       },
       { name: "send", summary: "Send a queued prompt to the current thread now", usage: "bb prompts send <id>" },
+      {
+        name: "push",
+        summary: "Move a queued prompt into bb's native queue (auto-delivers next turn)",
+        usage: "bb prompts push <id>",
+      },
       { name: "arm", summary: "Arm/disarm auto-send for a prompt", usage: "bb prompts arm|disarm <id>" },
       { name: "run", summary: "Arm every queued prompt in this thread (drain in order)", usage: "bb prompts run" },
       { name: "pause", summary: "Pause/resume auto-send for this thread", usage: "bb prompts pause|resume" },
@@ -580,6 +693,26 @@ export default function plugin(bb: BbPluginApi) {
           return result.sent
             ? { exitCode: 0, stdout: `Sent ${id}.` }
             : fail(`Send failed: ${result.error}`);
+        }
+        case "push": {
+          const id = rest[0];
+          if (!id) return fail("Usage: bb prompts push <id>");
+          if (threadId === null) return fail("Not in a thread.");
+          const claimed = store.claimPrompt(id, "bb-queue");
+          if (!claimed) return fail(`No queued prompt with id ${id}.`);
+          try {
+            await bb.sdk.threads.queuedMessages.create({
+              threadId,
+              input: [{ type: "text", text: claimed.text, mentions: [] }],
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            store.requeuePrompt(claimed.id, message);
+            notify(threadId);
+            return fail(`Push failed: ${message}`);
+          }
+          notify(threadId);
+          return { exitCode: 0, stdout: `Pushed ${id} to bb's queue.` };
         }
         case "arm":
         case "disarm": {

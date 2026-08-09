@@ -75,7 +75,20 @@ interface PromptDto {
   createdAt: number;
   updatedAt: number;
   usedAt: number | null;
-  usedVia: "inject" | "auto-send" | "cli" | "scheduled" | "cross-thread" | null;
+  usedVia:
+    | "inject"
+    | "auto-send"
+    | "cli"
+    | "scheduled"
+    | "cross-thread"
+    | "bb-queue"
+    | null;
+}
+
+interface NativeQueueItem {
+  id: string;
+  text: string;
+  updatedAt: number;
 }
 
 interface SnippetDto {
@@ -457,6 +470,7 @@ function PromptRow({
   onEdit,
   onSchedule,
   onMove,
+  onPush,
   onSaveAsSnippet,
   rpc,
   refresh,
@@ -473,6 +487,7 @@ function PromptRow({
   onEdit: (prompt: PromptDto) => void;
   onSchedule: (prompt: PromptDto) => void;
   onMove: (index: number, direction: "up" | "down") => void;
+  onPush: ((prompt: PromptDto) => void) | null;
   onSaveAsSnippet: (prompt: PromptDto) => void;
   rpc: Rpc;
   refresh: () => void;
@@ -693,6 +708,12 @@ function PromptRow({
                 )}
               </DropdownMenuSubContent>
             </DropdownMenuSub>
+            {onPush !== null ? (
+              <DropdownMenuItem onSelect={() => onPush(prompt)}>
+                <Icon name="ChevronsUp" className="size-4" aria-hidden />
+                Push to bb queue
+              </DropdownMenuItem>
+            ) : null}
             <DropdownMenuItem onSelect={() => onSaveAsSnippet(prompt)}>
               <Icon name="Star" className="size-4" aria-hidden />
               Save as snippet
@@ -893,6 +914,7 @@ function QueueView({
   const compactViewport = useIsCompactViewport();
   const alwaysShowActions = pointerCoarse || compactViewport;
   const [snippets, setSnippets] = useState<SnippetDto[]>([]);
+  const [nativeItems, setNativeItems] = useState<NativeQueueItem[]>([]);
   const dragFrom = useRef<number | null>(null);
   const [dragOver, setDragOver] = useState<number | null>(null);
 
@@ -906,11 +928,24 @@ function QueueView({
       .catch(() => {});
   }, [rpc, search]);
 
+  const refreshNative = useCallback(() => {
+    if (threadId === null) {
+      setNativeItems([]);
+      return;
+    }
+    void rpc
+      .call("listNativeQueue", { threadId })
+      .then((result) => setNativeItems(result.items))
+      .catch(() => setNativeItems([]));
+  }, [rpc, threadId]);
+
   useEffect(() => {
     if (activeTab === "snippets") refreshSnippets();
-  }, [activeTab, refreshSnippets]);
+    if (activeTab === "thread") refreshNative();
+  }, [activeTab, refreshSnippets, refreshNative]);
   useRealtime("prompts", () => {
     if (activeTab === "snippets") refreshSnippets();
+    if (activeTab === "thread") refreshNative();
   });
 
   const filter = useCallback(
@@ -1097,6 +1132,43 @@ function QueueView({
         .then(refresh);
     },
   };
+
+  // ---- bb native queue bridge ----
+
+  function pushToNative(prompt: PromptDto): void {
+    if (threadId === null) return;
+    void rpc
+      .call("pushToNativeQueue", { id: prompt.id, threadId })
+      .then(({ pushed, error }) => {
+        refresh();
+        refreshNative();
+        if (pushed) toast.success("Moved to bb's queue — sends with the next turn");
+        else toast.error(error ?? "Push failed");
+      });
+  }
+
+  function stashNative(item: NativeQueueItem): void {
+    if (threadId === null) return;
+    void rpc
+      .call("stashNativeMessage", { threadId, queuedMessageId: item.id })
+      .then(({ prompt, error }) => {
+        refresh();
+        refreshNative();
+        if (prompt) toast.success("Stashed — it won't send until you say so");
+        else toast.error(error ?? "Stash failed");
+      });
+  }
+
+  function sendNative(item: NativeQueueItem): void {
+    if (threadId === null) return;
+    void rpc
+      .call("sendNativeNow", { threadId, queuedMessageId: item.id })
+      .then(({ sent, error }) => {
+        refreshNative();
+        if (sent) toast.success("Sent");
+        else toast.error(error ?? "Send failed");
+      });
+  }
 
   /** Swap-based reorder for menu items and touch arrow buttons. */
   function movePrompt(index: number, direction: "up" | "down"): void {
@@ -1290,6 +1362,50 @@ function QueueView({
           listClassName,
         )}
       >
+        {activeTab === "thread" && nativeItems.length > 0 ? (
+          <div className="mb-1 border-b border-border pb-1">
+            <p className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-muted-foreground">
+              <Icon name="Sent" className="size-3" aria-hidden />
+              In bb's queue — sends automatically
+            </p>
+            {nativeItems.map((item) => (
+              <div
+                key={item.id}
+                className="group flex items-start gap-2 rounded-md px-2 py-1.5 hover:bg-state-hover"
+              >
+                <span className="line-clamp-2 min-w-0 flex-1 text-sm text-foreground">
+                  {previewText(item.text)}
+                </span>
+                <div
+                  className={cn(
+                    "flex shrink-0 items-center gap-0.5 transition-opacity focus-within:opacity-100 group-hover:opacity-100",
+                    alwaysShowActions ? "opacity-100" : "opacity-0",
+                  )}
+                >
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 px-2 text-xs"
+                    onClick={() => sendNative(item)}
+                    aria-label="Send now"
+                  >
+                    <Icon name="Sent" className="size-3.5" aria-hidden />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 px-2 text-xs"
+                    onClick={() => stashNative(item)}
+                    aria-label="Stash: move to the Prompts queue so it does not auto-send"
+                  >
+                    <Icon name="ArrowDown" className="size-3.5" aria-hidden />
+                    Stash
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
         {activeTab === "snippets" ? (
           snippets.length === 0 ? (
             <p className="flex h-full min-h-24 items-center justify-center px-3 py-6 text-center text-sm text-muted-foreground">
@@ -1344,7 +1460,9 @@ function QueueView({
                       ? "scheduled send"
                       : prompt.usedVia === "cross-thread"
                         ? "sent to another thread"
-                        : "used"}
+                        : prompt.usedVia === "bb-queue"
+                          ? "moved to bb's queue"
+                          : "used"}
                   {prompt.scope === "global" ? " · global" : ""}
                 </span>
               </div>
@@ -1379,6 +1497,7 @@ function QueueView({
               }}
               onSchedule={setScheduling}
               onMove={movePrompt}
+              onPush={threadId === null ? null : pushToNative}
               onSaveAsSnippet={saveAsSnippet}
               rpc={rpc}
               refresh={refresh}

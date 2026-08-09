@@ -56,7 +56,13 @@ export const MIGRATIONS: string[] = [
 ];
 
 export type Scope = "thread" | "global";
-export type UsedVia = "inject" | "auto-send" | "cli" | "scheduled" | "cross-thread";
+export type UsedVia =
+  | "inject"
+  | "auto-send"
+  | "cli"
+  | "scheduled"
+  | "cross-thread"
+  | "bb-queue";
 
 export interface Prompt {
   id: string;

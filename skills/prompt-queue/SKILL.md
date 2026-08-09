@@ -30,6 +30,7 @@ The Prompts plugin keeps two stores the user manages from the composer:
 bb prompts list                     # queued prompts (thread + global)
 bb prompts add [-g] [--arm] [--at +5m|ISO] <text…>
 bb prompts send <id>                # send a queued prompt to this thread now
+bb prompts push <id>                # move it into bb's native queue (auto-delivers next turn)
 bb prompts arm|disarm <id>          # toggle auto-send-on-idle
 bb prompts run                      # arm the whole thread queue (drains in order)
 bb prompts pause | resume           # gate auto-send for this thread
