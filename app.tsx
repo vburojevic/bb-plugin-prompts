@@ -794,7 +794,11 @@ function SnippetRow({
             />
           ) : null}
           {snippet.groupName ? (
-            <Badge variant="secondary" className="shrink-0 px-1.5 text-[10px]">
+            <Badge
+              variant="secondary"
+              className="shrink-0 px-1.5"
+              style={{ fontSize: 10 }}
+            >
               {snippet.groupName}
             </Badge>
           ) : null}
@@ -859,12 +863,19 @@ function QueueView({
   onInsertText,
   className,
   listClassName,
+  fixedHeight = false,
 }: {
   threadId: string | null;
   /** Receives final text (fill-ins resolved); null = no composer here. */
   onInsertText: ((text: string) => boolean) | null;
   className?: string;
   listClassName?: string;
+  /**
+   * Desktop popover mode: constant overall height so switching tabs never
+   * changes the panel's footprint (the popover opens upward — a height
+   * change would make the top edge jump instead of growing from the anchor).
+   */
+  fixedHeight?: boolean;
 }) {
   const { data, refresh, rpc } = useQueue(threadId, true);
   const [tab, setTab] = useState<"thread" | "global" | "snippets" | "used">(
@@ -1140,14 +1151,14 @@ function QueueView({
   return (
     <div
       className={cn("flex flex-col", className)}
-      // The p-0 passed to PopoverContent strips the drawer's own safe-area
-      // padding on mobile; restore it here so the footer clears the home
-      // indicator instead of hiding under it.
-      style={
-        compactViewport
+      // Mobile: restore the safe-area padding stripped by the popover's p-0.
+      // Desktop popover: fixed height so tab switches never move the panel.
+      style={{
+        ...(compactViewport
           ? { paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }
-          : undefined
-      }
+          : undefined),
+        ...(fixedHeight && !compactViewport ? { height: "30rem" } : undefined),
+      }}
     >
       <div className="space-y-2 border-b border-border p-2">
         <Tabs
@@ -1266,17 +1277,22 @@ function QueueView({
       </div>
 
       <div
+        // Keyed by tab: each switch replays a quick fade/rise, and scroll
+        // position resets to the top of the new list.
+        key={activeTab}
         className={cn(
           "flex-1 overflow-y-auto p-1",
+          "animate-in fade-in-0 slide-in-from-bottom-2 duration-150",
           // In the compact-viewport drawer the shell owns scrolling; a fixed
-          // inner cap would clip the list bottom instead.
-          compactViewport ? "max-h-none" : "max-h-72",
+          // inner cap would clip the list bottom. Fixed-height popover mode
+          // lets flex distribute the constant footprint instead.
+          compactViewport || fixedHeight ? "min-h-0 max-h-none" : "max-h-72",
           listClassName,
         )}
       >
         {activeTab === "snippets" ? (
           snippets.length === 0 ? (
-            <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+            <p className="flex h-full min-h-24 items-center justify-center px-3 py-6 text-center text-sm text-muted-foreground">
               {searchActive
                 ? "No snippets match."
                 : "No snippets yet. Save reusable prompts here — {{tokens}} become fill-in fields."}
@@ -1304,7 +1320,7 @@ function QueueView({
             ))
           )
         ) : list.length === 0 ? (
-          <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+          <p className="flex h-full min-h-24 items-center justify-center px-3 py-6 text-center text-sm text-muted-foreground">
             {activeTab === "used"
               ? "Nothing used yet."
               : searchActive
@@ -1578,7 +1594,8 @@ function QueueButton() {
           />
           {pending > 0 ? (
             <span
-              className="text-[10px] font-medium leading-none tabular-nums"
+              className="font-medium leading-none tabular-nums"
+              style={{ fontSize: 10 }}
               aria-hidden
             >
               {pending > 99 ? "99+" : pending}
@@ -1586,8 +1603,17 @@ function QueueButton() {
           ) : null}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-96 p-0" mobileRepositionInputs>
-        <QueueView threadId={threadId} onInsertText={insertText} />
+      <PopoverContent
+        align="end"
+        className="w-96 overflow-hidden p-0 duration-200"
+        // Grow from the corner nearest the button instead of zooming from
+        // the center — Radix points this var at the anchor.
+        style={{
+          transformOrigin: "var(--radix-popover-content-transform-origin)",
+        }}
+        mobileRepositionInputs
+      >
+        <QueueView threadId={threadId} onInsertText={insertText} fixedHeight />
       </PopoverContent>
     </Popover>
   );
