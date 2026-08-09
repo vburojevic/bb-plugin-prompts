@@ -1387,6 +1387,16 @@ function QueueView({
             }}
             placeholder="Write a prompt for later…"
             className="min-h-16 resize-none text-sm"
+            onFocus={(event) => {
+              // Mobile fallback: vaul repositions the drawer for the
+              // keyboard, but some webviews miss the visualViewport signal —
+              // nudge the field into view once the keyboard settles.
+              if (!compactViewport) return;
+              const target = event.currentTarget;
+              setTimeout(() => {
+                target.scrollIntoView({ block: "center", behavior: "smooth" });
+              }, 350);
+            }}
           />
           <div className="mt-2 flex items-center justify-between gap-2">
             {hasThreadTab && activeTab !== "global" ? (
