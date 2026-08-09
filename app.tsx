@@ -19,6 +19,7 @@ import {
 } from "react";
 import {
   definePluginApp,
+  useBbNavigate,
   useComposer,
   useComposerView,
   useRealtime,
@@ -29,6 +30,7 @@ import type { rpcContract } from "./server";
 import { extractTokens, fillTokens } from "./lib/template";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -885,6 +887,7 @@ function QueueView({
   className,
   listClassName,
   fixedHeight = false,
+  onOpenManager = null,
 }: {
   threadId: string | null;
   /** Receives final text (fill-ins resolved); null = no composer here. */
@@ -897,6 +900,8 @@ function QueueView({
    * change would make the top edge jump instead of growing from the anchor).
    */
   fixedHeight?: boolean;
+  /** Renders an expand button that jumps to the full manager screen. */
+  onOpenManager?: (() => void) | null;
 }) {
   const { data, refresh, rpc } = useQueue(threadId, true);
   const [tab, setTab] = useState<"thread" | "global" | "snippets" | "used">(
@@ -1298,6 +1303,17 @@ function QueueView({
           </TabsList>
         </Tabs>
         <div className="flex items-center gap-1.5">
+          {onOpenManager !== null ? (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="size-7 shrink-0 text-muted-foreground"
+              onClick={onOpenManager}
+              aria-label="Open the Prompts manager"
+            >
+              <Icon name="Maximize2" className="size-3.5" aria-hidden />
+            </Button>
+          ) : null}
           <Input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
@@ -1664,6 +1680,7 @@ function QueueView({
 
 function QueueButton() {
   const composer = useComposer();
+  const navigate = useBbNavigate();
   const threadId = useComposerThreadId();
   const [open, setOpen] = useState(false);
   const { data } = useQueue(threadId, true);
@@ -1783,7 +1800,15 @@ function QueueButton() {
         }}
         mobileRepositionInputs
       >
-        <QueueView threadId={threadId} onInsertText={insertText} fixedHeight />
+        <QueueView
+          threadId={threadId}
+          onInsertText={insertText}
+          fixedHeight
+          onOpenManager={() => {
+            setOpen(false);
+            navigate.toPluginPanel("manager");
+          }}
+        />
       </PopoverContent>
     </Popover>
   );
@@ -1856,6 +1881,771 @@ function QueuePanel({ threadId }: { threadId: string }) {
   // No composer in the side panel: manage, arm, schedule — no inject.
   return (
     <QueueView threadId={threadId} onInsertText={null} listClassName="max-h-none" />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Manager: full-screen nav panel (left sidebar entry)
+// ---------------------------------------------------------------------------
+
+interface OverviewThread {
+  threadId: string;
+  title: string;
+  paused: boolean;
+  nativeCount: number;
+  prompts: PromptDto[];
+}
+
+interface OverviewData {
+  globalPrompts: PromptDto[];
+  threads: OverviewThread[];
+  snippets: SnippetDto[];
+  recentlyUsed: PromptDto[];
+}
+
+function StatTile({
+  icon,
+  label,
+  value,
+  accent = false,
+}: {
+  icon: Parameters<typeof Icon>[0]["name"];
+  label: string;
+  value: number;
+  accent?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3">
+      <span
+        className={cn(
+          "flex size-8 shrink-0 items-center justify-center rounded-md",
+          accent && value > 0
+            ? "bg-primary/10 text-primary"
+            : "bg-muted text-muted-foreground",
+        )}
+      >
+        <Icon name={icon} className="size-4" aria-hidden />
+      </span>
+      <div className="min-w-0">
+        <p className="text-lg font-semibold leading-tight tabular-nums">
+          {value}
+        </p>
+        <p className="truncate text-xs text-muted-foreground">{label}</p>
+      </div>
+    </div>
+  );
+}
+
+function ManagerRow({
+  prompt,
+  index,
+  count,
+  rpc,
+  refresh,
+  onEdit,
+  onSchedule,
+  onSaveAsSnippet,
+  onSendNow,
+  onPush,
+}: {
+  prompt: PromptDto;
+  index: number;
+  count: number;
+  rpc: Rpc;
+  refresh: () => void;
+  onEdit: (prompt: PromptDto) => void;
+  onSchedule: (prompt: PromptDto) => void;
+  onSaveAsSnippet: (prompt: PromptDto) => void;
+  onSendNow: ((prompt: PromptDto) => void) | null;
+  onPush: ((prompt: PromptDto) => void) | null;
+}) {
+  async function move(direction: "up" | "down"): Promise<void> {
+    // Full-permutation reorder within this prompt's own scope group.
+    const { threadPrompts, globalPrompts } = await rpc.call("listPrompts", {
+      threadId: prompt.threadId,
+    });
+    const siblings = prompt.scope === "thread" ? threadPrompts : globalPrompts;
+    const from = siblings.findIndex((entry) => entry.id === prompt.id);
+    const to = direction === "up" ? from - 1 : from + 1;
+    if (from < 0 || to < 0 || to >= siblings.length) return;
+    const ordered = [...siblings];
+    const [moved] = ordered.splice(from, 1);
+    ordered.splice(to, 0, moved!);
+    await rpc.call("reorderPrompts", {
+      scope: prompt.scope,
+      threadId: prompt.threadId,
+      ids: ordered.map((entry) => entry.id),
+    });
+    refresh();
+  }
+
+  async function remove(): Promise<void> {
+    const { deleted } = await rpc.call("deletePrompt", { id: prompt.id });
+    if (!deleted) return;
+    refresh();
+    toast("Prompt deleted", {
+      action: {
+        label: "Undo",
+        onClick: () =>
+          void rpc
+            .call("addPrompt", {
+              text: prompt.text,
+              scope: prompt.scope,
+              threadId: prompt.threadId,
+              autoSend: prompt.autoSend,
+            })
+            .then(refresh),
+      },
+    });
+  }
+
+  async function toggleArm(): Promise<void> {
+    await rpc.call("updatePrompt", { id: prompt.id, autoSend: !prompt.autoSend });
+    refresh();
+  }
+
+  return (
+    <div className="group flex items-start gap-2 rounded-md px-2 py-2 transition-colors hover:bg-state-hover">
+      <span className="flex shrink-0 flex-col pt-0.5">
+        <button
+          type="button"
+          className="flex h-4 w-5 items-center justify-center text-muted-foreground/50 transition-colors hover:text-foreground disabled:opacity-25"
+          disabled={index === 0}
+          onClick={() => void move("up")}
+          aria-label="Move up"
+        >
+          <Icon name="ChevronUp" className="size-3.5" aria-hidden />
+        </button>
+        <button
+          type="button"
+          className="flex h-4 w-5 items-center justify-center text-muted-foreground/50 transition-colors hover:text-foreground disabled:opacity-25"
+          disabled={index === count - 1}
+          onClick={() => void move("down")}
+          aria-label="Move down"
+        >
+          <Icon name="ChevronDown" className="size-3.5" aria-hidden />
+        </button>
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="line-clamp-2 text-sm text-foreground">
+          {previewText(prompt.text)}
+        </p>
+        <p className="flex flex-wrap items-center gap-x-2 text-xs">
+          {prompt.autoSend ? (
+            <span className="inline-flex items-center gap-1 text-primary">
+              <Icon name="TimeSchedule" className="size-3" aria-hidden />
+              auto-send
+            </span>
+          ) : null}
+          {prompt.sendAt !== null ? (
+            <span className="inline-flex items-center gap-1 text-primary">
+              <Icon name="Calendar" className="size-3" aria-hidden />
+              {formatWhen(prompt.sendAt)}
+            </span>
+          ) : null}
+          {prompt.lastError !== null ? (
+            <span
+              className="inline-flex items-center gap-1 text-destructive"
+              title={prompt.lastError}
+            >
+              <Icon name="AlertCircle" className="size-3" aria-hidden />
+              send failed — re-queued
+            </span>
+          ) : null}
+        </p>
+      </div>
+      <div className="flex shrink-0 items-center gap-0.5">
+        {prompt.scope === "thread" ? (
+          <Button
+            size="icon"
+            variant="ghost"
+            className={cn("size-7", prompt.autoSend && "text-primary")}
+            onClick={() => void toggleArm()}
+            aria-label={prompt.autoSend ? "Disarm auto-send" : "Arm auto-send"}
+          >
+            <Icon name="TimeSchedule" className="size-3.5" aria-hidden />
+          </Button>
+        ) : null}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="size-7"
+              aria-label="Prompt actions"
+            >
+              <Icon name="MoreHorizontal" className="size-3.5" aria-hidden />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {onSendNow !== null ? (
+              <DropdownMenuItem onSelect={() => onSendNow(prompt)}>
+                <Icon name="Sent" className="size-4" aria-hidden />
+                Send now
+              </DropdownMenuItem>
+            ) : null}
+            {onPush !== null ? (
+              <DropdownMenuItem onSelect={() => onPush(prompt)}>
+                <Icon name="ChevronsUp" className="size-4" aria-hidden />
+                Push to bb queue
+              </DropdownMenuItem>
+            ) : null}
+            <DropdownMenuItem onSelect={() => onEdit(prompt)}>
+              <Icon name="Edit" className="size-4" aria-hidden />
+              Edit
+            </DropdownMenuItem>
+            {prompt.scope === "thread" ? (
+              <DropdownMenuItem onSelect={() => onSchedule(prompt)}>
+                <Icon name="Calendar" className="size-4" aria-hidden />
+                {prompt.sendAt === null ? "Schedule…" : "Reschedule…"}
+              </DropdownMenuItem>
+            ) : null}
+            <DropdownMenuItem onSelect={() => onSaveAsSnippet(prompt)}>
+              <Icon name="Star" className="size-4" aria-hidden />
+              Save as snippet
+            </DropdownMenuItem>
+            {prompt.scope === "thread" ? (
+              <DropdownMenuItem
+                onSelect={() =>
+                  void rpc
+                    .call("updatePrompt", { id: prompt.id, scope: "global" })
+                    .then(refresh)
+                }
+              >
+                <Icon name="ArrowUpDown" className="size-4" aria-hidden />
+                Move to global
+              </DropdownMenuItem>
+            ) : null}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onSelect={() => void remove()}>
+              <Icon name="Trash2" className="size-4" aria-hidden />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    </div>
+  );
+}
+
+function ManagerPanel() {
+  const rpc = useRpc<typeof rpcContract>();
+  const navigate = useBbNavigate();
+  const [data, setData] = useState<OverviewData | null>(null);
+  const [snippetSearch, setSnippetSearch] = useState("");
+  const [newPrompt, setNewPrompt] = useState("");
+  const [editing, setEditing] = useState<PromptDto | null>(null);
+  const [editText, setEditText] = useState("");
+  const [scheduling, setScheduling] = useState<PromptDto | null>(null);
+  const [snippetDraft, setSnippetDraft] = useState<SnippetDraft | null>(null);
+  const [fillIn, setFillIn] = useState<FillInRequest | null>(null);
+
+  const refresh = useCallback(() => {
+    void rpc
+      .call("overview")
+      .then((result) => setData(result))
+      .catch(() => {});
+  }, [rpc]);
+  useEffect(refresh, [refresh]);
+  useRealtime("prompts", refresh);
+
+  const stats = useMemo(() => {
+    if (!data) return { queued: 0, armed: 0, scheduled: 0, snippets: 0 };
+    const all = [...data.globalPrompts, ...data.threads.flatMap((t) => t.prompts)];
+    return {
+      queued: all.length,
+      armed: all.filter((p) => p.autoSend).length,
+      scheduled: all.filter((p) => p.sendAt !== null).length,
+      snippets: data.snippets.length,
+    };
+  }, [data]);
+
+  const visibleSnippets = useMemo(() => {
+    if (!data) return [];
+    const query = snippetSearch.trim().toLowerCase();
+    if (!query) return data.snippets;
+    return data.snippets.filter((snippet) =>
+      [snippet.title, snippet.keywords, snippet.body, snippet.groupName ?? ""]
+        .join("\n")
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [data, snippetSearch]);
+
+  function sendNow(prompt: PromptDto): void {
+    if (prompt.threadId === null) return;
+    void rpc
+      .call("sendPromptToThread", { id: prompt.id, threadId: prompt.threadId })
+      .then(({ sent, error }) => {
+        refresh();
+        if (sent) toast.success("Prompt sent");
+        else toast.error(error ?? "Send failed");
+      });
+  }
+
+  function pushToNative(prompt: PromptDto): void {
+    if (prompt.threadId === null) return;
+    void rpc
+      .call("pushToNativeQueue", { id: prompt.id, threadId: prompt.threadId })
+      .then(({ pushed, error }) => {
+        refresh();
+        if (pushed) toast.success("Moved to bb's queue");
+        else toast.error(error ?? "Push failed");
+      });
+  }
+
+  function queueSnippetGlobally(snippet: SnippetDto): void {
+    const deliver = (filled: string) => {
+      void rpc
+        .call("addPrompt", {
+          text: filled,
+          scope: "global",
+          threadId: null,
+          autoSend: false,
+        })
+        .then(() => {
+          void rpc.call("useSnippet", { id: snippet.id });
+          refresh();
+          toast.success(`“${snippet.title}” queued globally`);
+        });
+    };
+    if (extractTokens(snippet.body).length > 0) {
+      setFillIn({ text: snippet.body, title: snippet.title, complete: deliver });
+    } else {
+      deliver(snippet.body);
+    }
+  }
+
+  async function addGlobalPrompt(): Promise<void> {
+    const text = newPrompt.trim();
+    if (!text) return;
+    await rpc.call("addPrompt", {
+      text,
+      scope: "global",
+      threadId: null,
+      autoSend: false,
+    });
+    setNewPrompt("");
+    refresh();
+  }
+
+  async function saveEdit(): Promise<void> {
+    if (editing === null || !editText.trim()) return;
+    await rpc.call("updatePrompt", { id: editing.id, text: editText.trim() });
+    setEditing(null);
+    refresh();
+  }
+
+  const rowHandlers = {
+    rpc,
+    refresh,
+    onEdit: (prompt: PromptDto) => {
+      setEditing(prompt);
+      setEditText(prompt.text);
+    },
+    onSchedule: setScheduling,
+    onSaveAsSnippet: (prompt: PromptDto) =>
+      setSnippetDraft({
+        id: null,
+        title: previewText(prompt.text).slice(0, 60),
+        body: prompt.text,
+        keywords: "",
+        groupName: "",
+      }),
+  };
+
+  return (
+    <div className="h-full overflow-y-auto p-4 md:p-5">
+      <div className="mx-auto w-full max-w-5xl space-y-4">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <StatTile icon="ListTodo" label="Queued prompts" value={stats.queued} />
+          <StatTile
+            icon="TimeSchedule"
+            label="Armed to auto-send"
+            value={stats.armed}
+            accent
+          />
+          <StatTile
+            icon="Calendar"
+            label="Scheduled"
+            value={stats.scheduled}
+            accent
+          />
+          <StatTile icon="Star" label="Snippets" value={stats.snippets} />
+        </div>
+
+        <div className="grid items-start gap-4 lg:grid-cols-5">
+          <div className="space-y-4 lg:col-span-3">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Icon name="Globe" className="size-4 text-muted-foreground" aria-hidden />
+                  Global queue
+                  {data && data.globalPrompts.length > 0 ? (
+                    <Badge variant="secondary">{data.globalPrompts.length}</Badge>
+                  ) : null}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 pt-0">
+                {data === null ? (
+                  <p className="py-4 text-sm text-muted-foreground">Loading…</p>
+                ) : data.globalPrompts.length === 0 ? (
+                  <p className="py-2 text-sm text-muted-foreground">
+                    Nothing queued globally. Global prompts can be injected in
+                    any thread.
+                  </p>
+                ) : (
+                  <div>
+                    {data.globalPrompts.map((prompt, index) => (
+                      <ManagerRow
+                        key={prompt.id}
+                        prompt={prompt}
+                        index={index}
+                        count={data.globalPrompts.length}
+                        onSendNow={null}
+                        onPush={null}
+                        {...rowHandlers}
+                      />
+                    ))}
+                  </div>
+                )}
+                <div className="flex items-end gap-2 border-t border-border pt-3">
+                  <Textarea
+                    value={newPrompt}
+                    onChange={(event) => setNewPrompt(event.target.value)}
+                    onKeyDown={(event) => {
+                      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                        event.preventDefault();
+                        void addGlobalPrompt();
+                      }
+                    }}
+                    placeholder="Write a prompt for later…"
+                    className="min-h-14 flex-1 resize-none text-sm"
+                  />
+                  <Button
+                    size="sm"
+                    disabled={!newPrompt.trim()}
+                    onClick={() => void addGlobalPrompt()}
+                  >
+                    Queue
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+
+            {data?.threads.map((thread) => (
+              <Card key={thread.threadId}>
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Icon
+                      name="MessageSquare"
+                      className="size-4 shrink-0 text-muted-foreground"
+                      aria-hidden
+                    />
+                    <button
+                      type="button"
+                      className="min-w-0 truncate text-left transition-colors hover:text-primary"
+                      onClick={() => navigate.toThread(thread.threadId)}
+                      title="Open thread"
+                    >
+                      {thread.title}
+                    </button>
+                    <Badge variant="secondary">{thread.prompts.length}</Badge>
+                    {thread.nativeCount > 0 ? (
+                      <Badge variant="outline" className="text-primary">
+                        {thread.nativeCount} in bb queue
+                      </Badge>
+                    ) : null}
+                    {thread.paused ? (
+                      <Badge variant="outline">paused</Badge>
+                    ) : null}
+                    <span className="flex-1" />
+                    {thread.prompts.some((p) => !p.autoSend) ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-6 px-2 text-xs"
+                        onClick={() =>
+                          void rpc
+                            .call("armAll", { threadId: thread.threadId })
+                            .then(refresh)
+                        }
+                      >
+                        <Icon name="Play" className="size-3" aria-hidden />
+                        Run queue
+                      </Button>
+                    ) : null}
+                    {thread.prompts.some((p) => p.autoSend) ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-2 text-xs"
+                        onClick={() =>
+                          void rpc
+                            .call("setPaused", {
+                              threadId: thread.threadId,
+                              paused: !thread.paused,
+                            })
+                            .then(refresh)
+                        }
+                      >
+                        <Icon
+                          name={thread.paused ? "Play" : "Pause"}
+                          className="size-3"
+                          aria-hidden
+                        />
+                        {thread.paused ? "Resume" : "Pause"}
+                      </Button>
+                    ) : null}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  {thread.prompts.map((prompt, index) => (
+                    <ManagerRow
+                      key={prompt.id}
+                      prompt={prompt}
+                      index={index}
+                      count={thread.prompts.length}
+                      onSendNow={sendNow}
+                      onPush={pushToNative}
+                      {...rowHandlers}
+                    />
+                  ))}
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+
+          <div className="space-y-4 lg:col-span-2">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Icon name="Star" className="size-4 text-muted-foreground" aria-hidden />
+                  Snippets
+                  <span className="flex-1" />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 px-2 text-xs"
+                    onClick={() =>
+                      setSnippetDraft({
+                        id: null,
+                        title: "",
+                        body: "",
+                        keywords: "",
+                        groupName: "",
+                      })
+                    }
+                  >
+                    <Icon name="Plus" className="size-3" aria-hidden />
+                    New
+                  </Button>
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2 pt-0">
+                <Input
+                  value={snippetSearch}
+                  onChange={(event) => setSnippetSearch(event.target.value)}
+                  placeholder="Search snippets…"
+                  className="h-8 text-sm"
+                />
+                {visibleSnippets.length === 0 ? (
+                  <p className="py-2 text-sm text-muted-foreground">
+                    {snippetSearch.trim()
+                      ? "No snippets match."
+                      : "No snippets yet — save reusable prompts here."}
+                  </p>
+                ) : (
+                  visibleSnippets.map((snippet) => (
+                    <div
+                      key={snippet.id}
+                      className="group flex items-start gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-state-hover"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="flex items-center gap-1.5 text-sm font-medium">
+                          <span className="truncate">{snippet.title}</span>
+                          {snippet.groupName ? (
+                            <Badge
+                              variant="secondary"
+                              className="shrink-0 px-1.5"
+                              style={{ fontSize: 10 }}
+                            >
+                              {snippet.groupName}
+                            </Badge>
+                          ) : null}
+                        </p>
+                        <p className="line-clamp-1 text-xs text-muted-foreground">
+                          {previewText(snippet.body)}
+                        </p>
+                        {snippet.useCount > 0 ? (
+                          <p className="text-xs text-muted-foreground/60">
+                            used {snippet.useCount}×
+                          </p>
+                        ) : null}
+                      </div>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="size-7 shrink-0"
+                            aria-label="Snippet actions"
+                          >
+                            <Icon
+                              name="MoreHorizontal"
+                              className="size-3.5"
+                              aria-hidden
+                            />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onSelect={() => queueSnippetGlobally(snippet)}
+                          >
+                            <Icon name="ListTodo" className="size-4" aria-hidden />
+                            Queue globally
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onSelect={() =>
+                              setSnippetDraft({
+                                id: snippet.id,
+                                title: snippet.title,
+                                body: snippet.body,
+                                keywords: snippet.keywords,
+                                groupName: snippet.groupName ?? "",
+                              })
+                            }
+                          >
+                            <Icon name="Edit" className="size-4" aria-hidden />
+                            Edit
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            variant="destructive"
+                            onSelect={() =>
+                              void rpc
+                                .call("deleteSnippet", { id: snippet.id })
+                                .then(refresh)
+                            }
+                          >
+                            <Icon name="Trash2" className="size-4" aria-hidden />
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  ))
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Icon
+                    name="Clock"
+                    className="size-4 text-muted-foreground"
+                    aria-hidden
+                  />
+                  Recently used
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="pt-0">
+                {data === null || data.recentlyUsed.length === 0 ? (
+                  <p className="py-2 text-sm text-muted-foreground">
+                    Nothing used yet.
+                  </p>
+                ) : (
+                  data.recentlyUsed.slice(0, 12).map((prompt) => (
+                    <div
+                      key={prompt.id}
+                      className="group flex items-start gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-state-hover"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="line-clamp-1 text-sm text-muted-foreground">
+                          {previewText(prompt.text)}
+                        </p>
+                        <p className="text-xs text-muted-foreground/60">
+                          {prompt.usedVia === "auto-send"
+                            ? "auto-sent"
+                            : prompt.usedVia === "scheduled"
+                              ? "scheduled send"
+                              : prompt.usedVia === "bb-queue"
+                                ? "moved to bb's queue"
+                                : prompt.usedVia === "cross-thread"
+                                  ? "sent to another thread"
+                                  : "used"}
+                          {prompt.usedAt ? ` · ${formatWhen(prompt.usedAt)}` : ""}
+                        </p>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 shrink-0 px-2 text-xs opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
+                        onClick={() =>
+                          void rpc
+                            .call("restorePrompt", { id: prompt.id })
+                            .then(refresh)
+                        }
+                      >
+                        <Icon
+                          name="ArrowTurnBackward"
+                          className="size-3.5"
+                          aria-hidden
+                        />
+                        Restore
+                      </Button>
+                    </div>
+                  ))
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      </div>
+
+      <Dialog open={editing !== null} onOpenChange={(open) => !open && setEditing(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit prompt</DialogTitle>
+          </DialogHeader>
+          <Textarea
+            value={editText}
+            onChange={(event) => setEditText(event.target.value)}
+            className="min-h-32"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditing(null)}>
+              Cancel
+            </Button>
+            <Button disabled={!editText.trim()} onClick={() => void saveEdit()}>
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <ScheduleDialog
+        prompt={scheduling}
+        rpc={rpc}
+        refresh={refresh}
+        onClose={() => setScheduling(null)}
+      />
+      <SnippetEditor
+        draft={snippetDraft}
+        rpc={rpc}
+        onSaved={refresh}
+        onClose={() => setSnippetDraft(null)}
+      />
+      <FillInDialog
+        request={fillIn}
+        onDone={(filled) => {
+          const request = fillIn;
+          setFillIn(null);
+          request?.complete(filled);
+        }}
+        onCancel={() => setFillIn(null)}
+      />
+    </div>
   );
 }
 
@@ -1933,5 +2723,13 @@ export default definePluginApp((app) => {
     title: "Prompts",
     icon: "ListTodo",
     component: ({ threadId }) => <QueuePanel threadId={threadId} />,
+  });
+
+  app.slots.navPanel({
+    id: "manager",
+    title: "Prompts",
+    icon: "ListTodo",
+    path: "manager",
+    component: ManagerPanel,
   });
 });

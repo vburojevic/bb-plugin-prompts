@@ -134,6 +134,23 @@ export const rpcContract = defineRpcContract({
     input: z.object({ id: z.string(), threadId: z.string() }).strict(),
     output: z.object({ sent: z.boolean(), error: z.string().nullable() }),
   },
+  overview: {
+    input: z.null(),
+    output: z.object({
+      globalPrompts: z.array(promptSchema),
+      threads: z.array(
+        z.object({
+          threadId: z.string(),
+          title: z.string(),
+          paused: z.boolean(),
+          nativeCount: z.number(),
+          prompts: z.array(promptSchema),
+        }),
+      ),
+      snippets: z.array(snippetSchema),
+      recentlyUsed: z.array(promptSchema),
+    }),
+  },
   listNativeQueue: {
     input: z.object({ threadId: z.string() }).strict(),
     output: z.object({
@@ -389,6 +406,40 @@ export default function plugin(bb: BbPluginApi) {
       if (!prompt || prompt.status !== "queued")
         return { sent: false, error: "Prompt is no longer queued." };
       return sendPrompt(prompt, threadId, "cross-thread");
+    },
+    async overview() {
+      const threadIds = store.listQueuedThreadIds().slice(0, 20);
+      const threads = [];
+      for (const threadId of threadIds) {
+        let title = "Untitled thread";
+        try {
+          const thread = await bb.sdk.threads.get({ threadId });
+          title = thread.title ?? thread.titleFallback ?? title;
+        } catch {
+          // Thread fetch failing is cosmetic; keep the group visible.
+        }
+        let nativeCount = 0;
+        try {
+          nativeCount = (
+            await bb.sdk.threads.queuedMessages.list({ threadId })
+          ).length;
+        } catch {
+          // Native queue unavailable (e.g. archived) — show zero.
+        }
+        threads.push({
+          threadId,
+          title,
+          paused: await isPaused(threadId),
+          nativeCount,
+          prompts: store.listQueued("thread", threadId),
+        });
+      }
+      return {
+        globalPrompts: store.listQueued("global", null),
+        threads,
+        snippets: store.listSnippets(""),
+        recentlyUsed: store.listAllUsed(30),
+      };
     },
     async listNativeQueue({ threadId }) {
       const messages = await bb.sdk.threads.queuedMessages.list({ threadId });

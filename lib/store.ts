@@ -194,6 +194,28 @@ export function createStore(db: Db, now: () => number = Date.now) {
     return rows.map(rowToPrompt);
   }
 
+  /** Every used prompt regardless of scope — the manager's history view. */
+  function listAllUsed(limit: number): Prompt[] {
+    const rows = db
+      .prepare(
+        `SELECT * FROM prompts WHERE status = 'used' ORDER BY used_at DESC LIMIT ?`,
+      )
+      .all(limit) as PromptRow[];
+    return rows.map(rowToPrompt);
+  }
+
+  /** Distinct threads that still have queued prompts. */
+  function listQueuedThreadIds(): string[] {
+    const rows = db
+      .prepare(
+        `SELECT DISTINCT thread_id FROM prompts
+         WHERE scope = 'thread' AND status = 'queued' AND thread_id IS NOT NULL
+         ORDER BY thread_id`,
+      )
+      .all() as { thread_id: string }[];
+    return rows.map((row) => row.thread_id);
+  }
+
   function listRecentlyUsed(threadId: string | null, limit: number): Prompt[] {
     const rows = db
       .prepare(
@@ -443,6 +465,8 @@ export function createStore(db: Db, now: () => number = Date.now) {
     getPrompt,
     listQueued,
     listRecentlyUsed,
+    listAllUsed,
+    listQueuedThreadIds,
     addPrompt,
     claimPrompt,
     requeuePrompt,
