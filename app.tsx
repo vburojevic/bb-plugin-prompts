@@ -16,6 +16,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import {
   definePluginApp,
@@ -31,6 +32,13 @@ import { extractTokens, fillTokens } from "./lib/template";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   Dialog,
   DialogContent,
@@ -1914,23 +1922,86 @@ function StatTile({
   value: number;
   accent?: boolean;
 }) {
+  const lit = accent && value > 0;
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3">
+    <div
+      className={cn(
+        "flex items-center gap-3 rounded-lg border bg-card px-4 py-3 transition-colors",
+        lit ? "border-primary/30" : "border-border",
+      )}
+    >
       <span
         className={cn(
-          "flex size-8 shrink-0 items-center justify-center rounded-md",
-          accent && value > 0
-            ? "bg-primary/10 text-primary"
-            : "bg-muted text-muted-foreground",
+          "flex size-8 shrink-0 items-center justify-center rounded-md transition-colors",
+          lit ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground",
         )}
       >
         <Icon name={icon} className="size-4" aria-hidden />
       </span>
       <div className="min-w-0">
-        <p className="text-lg font-semibold leading-tight tabular-nums">
+        <p
+          className={cn(
+            "text-lg font-semibold leading-tight tabular-nums",
+            lit && "text-primary",
+          )}
+        >
           {value}
         </p>
         <p className="truncate text-xs text-muted-foreground">{label}</p>
+      </div>
+    </div>
+  );
+}
+
+/** Icon chip + title + description header used by every manager card. */
+function CardHead({
+  icon,
+  title,
+  meta,
+  children,
+}: {
+  icon: Parameters<typeof Icon>[0]["name"];
+  title: ReactNode;
+  meta?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <CardHeader className="flex-row items-center gap-3 space-y-0 p-4 pb-3">
+      <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+        <Icon name={icon} className="size-4" aria-hidden />
+      </span>
+      <div className="min-w-0 flex-1">
+        <CardTitle className="flex min-w-0 items-center gap-2 text-sm">
+          {title}
+        </CardTitle>
+        {meta ? (
+          <p className="mt-0.5 truncate text-xs text-muted-foreground">{meta}</p>
+        ) : null}
+      </div>
+      {children ? (
+        <div className="flex shrink-0 items-center gap-1">{children}</div>
+      ) : null}
+    </CardHeader>
+  );
+}
+
+function ManagerSkeleton() {
+  return (
+    <div className="mx-auto w-full max-w-5xl space-y-4">
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        {Array.from({ length: 4 }, (_, index) => (
+          <Skeleton key={index} className="h-16 rounded-lg" />
+        ))}
+      </div>
+      <div className="grid items-start gap-4 lg:grid-cols-5">
+        <div className="space-y-4 lg:col-span-3">
+          <Skeleton className="h-56 rounded-lg" />
+          <Skeleton className="h-40 rounded-lg" />
+        </div>
+        <div className="space-y-4 lg:col-span-2">
+          <Skeleton className="h-64 rounded-lg" />
+          <Skeleton className="h-48 rounded-lg" />
+        </div>
       </div>
     </div>
   );
@@ -2133,6 +2204,7 @@ function ManagerPanel() {
   const navigate = useBbNavigate();
   const [data, setData] = useState<OverviewData | null>(null);
   const [snippetSearch, setSnippetSearch] = useState("");
+  const [groupFilter, setGroupFilter] = useState<string | null>(null);
   const [newPrompt, setNewPrompt] = useState("");
   const [editing, setEditing] = useState<PromptDto | null>(null);
   const [editText, setEditText] = useState("");
@@ -2160,17 +2232,37 @@ function ManagerPanel() {
     };
   }, [data]);
 
+  const snippetGroups = useMemo(() => {
+    if (!data) return [];
+    return [
+      ...new Set(
+        data.snippets
+          .map((snippet) => snippet.groupName)
+          .filter((name): name is string => name !== null),
+      ),
+    ].sort();
+  }, [data]);
+
   const visibleSnippets = useMemo(() => {
     if (!data) return [];
     const query = snippetSearch.trim().toLowerCase();
-    if (!query) return data.snippets;
-    return data.snippets.filter((snippet) =>
-      [snippet.title, snippet.keywords, snippet.body, snippet.groupName ?? ""]
+    return data.snippets.filter((snippet) => {
+      if (groupFilter !== null && snippet.groupName !== groupFilter)
+        return false;
+      if (!query) return true;
+      return [snippet.title, snippet.keywords, snippet.body, snippet.groupName ?? ""]
         .join("\n")
         .toLowerCase()
-        .includes(query),
-    );
-  }, [data, snippetSearch]);
+        .includes(query);
+    });
+  }, [data, snippetSearch, groupFilter]);
+
+  const isEmptyWorkspace =
+    data !== null &&
+    data.globalPrompts.length === 0 &&
+    data.threads.length === 0 &&
+    data.snippets.length === 0 &&
+    data.recentlyUsed.length === 0;
 
   function sendNow(prompt: PromptDto): void {
     if (prompt.threadId === null) return;
@@ -2254,9 +2346,62 @@ function ManagerPanel() {
       }),
   };
 
+  if (data === null) {
+    return (
+      <div className="h-full overflow-y-auto p-4 md:p-5">
+        <ManagerSkeleton />
+      </div>
+    );
+  }
+
+  if (isEmptyWorkspace) {
+    return (
+      <div className="flex h-full items-center justify-center p-6">
+        <div className="flex max-w-sm flex-col items-center gap-4 text-center animate-in fade-in-0 slide-in-from-bottom-2 duration-300">
+          <span className="flex size-14 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+            <Icon name="ListTodo" className="size-7" aria-hidden />
+          </span>
+          <div className="space-y-1.5">
+            <h2 className="text-base font-semibold">Nothing queued yet</h2>
+            <p className="text-sm text-muted-foreground">
+              Stash prompts while agents work, arm them to auto-send when a
+              thread goes idle, and keep reusable snippets with{" "}
+              <code className="rounded bg-muted px-1">{"{{fill-ins}}"}</code>.
+              The queue button lives next to the composer in every thread.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              onClick={() =>
+                setSnippetDraft({
+                  id: null,
+                  title: "",
+                  body: "",
+                  keywords: "",
+                  groupName: "",
+                })
+              }
+            >
+              <Icon name="Star" className="size-3.5" aria-hidden />
+              New snippet
+            </Button>
+          </div>
+        </div>
+        <SnippetEditor
+          draft={snippetDraft}
+          rpc={rpc}
+          onSaved={refresh}
+          onClose={() => setSnippetDraft(null)}
+        />
+      </div>
+    );
+  }
+
   return (
+    <TooltipProvider delayDuration={300}>
     <div className="h-full overflow-y-auto p-4 md:p-5">
-      <div className="mx-auto w-full max-w-5xl space-y-4">
+      <div className="mx-auto w-full max-w-5xl space-y-4 animate-in fade-in-0 duration-200">
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
           <StatTile icon="ListTodo" label="Queued prompts" value={stats.queued} />
           <StatTile
@@ -2277,19 +2422,22 @@ function ManagerPanel() {
         <div className="grid items-start gap-4 lg:grid-cols-5">
           <div className="space-y-4 lg:col-span-3">
             <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <Icon name="Globe" className="size-4 text-muted-foreground" aria-hidden />
-                  Global queue
-                  {data && data.globalPrompts.length > 0 ? (
-                    <Badge variant="secondary">{data.globalPrompts.length}</Badge>
-                  ) : null}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 pt-0">
-                {data === null ? (
-                  <p className="py-4 text-sm text-muted-foreground">Loading…</p>
-                ) : data.globalPrompts.length === 0 ? (
+              <CardHead
+                icon="Globe"
+                title={
+                  <>
+                    Global queue
+                    {data.globalPrompts.length > 0 ? (
+                      <Badge variant="secondary">
+                        {data.globalPrompts.length}
+                      </Badge>
+                    ) : null}
+                  </>
+                }
+                meta="Available to inject in any thread"
+              />
+              <CardContent className="space-y-2 p-4 pt-0">
+                {data.globalPrompts.length === 0 ? (
                   <p className="py-2 text-sm text-muted-foreground">
                     Nothing queued globally. Global prompts can be injected in
                     any thread.
@@ -2335,71 +2483,101 @@ function ManagerPanel() {
 
             {data?.threads.map((thread) => (
               <Card key={thread.threadId}>
-                <CardHeader className="pb-3">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <Icon
-                      name="MessageSquare"
-                      className="size-4 shrink-0 text-muted-foreground"
-                      aria-hidden
-                    />
-                    <button
-                      type="button"
-                      className="min-w-0 truncate text-left transition-colors hover:text-primary"
-                      onClick={() => navigate.toThread(thread.threadId)}
-                      title="Open thread"
-                    >
-                      {thread.title}
-                    </button>
-                    <Badge variant="secondary">{thread.prompts.length}</Badge>
-                    {thread.nativeCount > 0 ? (
-                      <Badge variant="outline" className="text-primary">
-                        {thread.nativeCount} in bb queue
-                      </Badge>
-                    ) : null}
-                    {thread.paused ? (
-                      <Badge variant="outline">paused</Badge>
-                    ) : null}
-                    <span className="flex-1" />
-                    {thread.prompts.some((p) => !p.autoSend) ? (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-6 px-2 text-xs"
-                        onClick={() =>
-                          void rpc
-                            .call("armAll", { threadId: thread.threadId })
-                            .then(refresh)
-                        }
+                <CardHead
+                  icon="MessageSquare"
+                  title={
+                    <>
+                      <button
+                        type="button"
+                        className="min-w-0 truncate text-left transition-colors hover:text-primary"
+                        onClick={() => navigate.toThread(thread.threadId)}
                       >
-                        <Icon name="Play" className="size-3" aria-hidden />
-                        Run queue
-                      </Button>
-                    ) : null}
-                    {thread.prompts.some((p) => p.autoSend) ? (
+                        {thread.title}
+                      </button>
+                      <Badge variant="secondary">{thread.prompts.length}</Badge>
+                      {thread.paused ? (
+                        <Badge variant="outline" className="gap-1">
+                          <Icon name="Pause" className="size-2.5" aria-hidden />
+                          paused
+                        </Badge>
+                      ) : null}
+                    </>
+                  }
+                  meta={
+                    thread.nativeCount > 0
+                      ? `${thread.nativeCount} in bb's queue send automatically — plus ${thread.prompts.length} stashed here`
+                      : `${thread.prompts.length} stashed prompt${thread.prompts.length === 1 ? "" : "s"}`
+                  }
+                >
+                  {thread.prompts.some((p) => !p.autoSend) ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 px-2 text-xs"
+                          onClick={() =>
+                            void rpc
+                              .call("armAll", { threadId: thread.threadId })
+                              .then(refresh)
+                          }
+                        >
+                          <Icon name="Play" className="size-3" aria-hidden />
+                          Run queue
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        Arm everything — sends in order as the agent idles
+                      </TooltipContent>
+                    </Tooltip>
+                  ) : null}
+                  {thread.prompts.some((p) => p.autoSend) ? (
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-7 px-2 text-xs"
+                          onClick={() =>
+                            void rpc
+                              .call("setPaused", {
+                                threadId: thread.threadId,
+                                paused: !thread.paused,
+                              })
+                              .then(refresh)
+                          }
+                        >
+                          <Icon
+                            name={thread.paused ? "Play" : "Pause"}
+                            className="size-3"
+                            aria-hidden
+                          />
+                          {thread.paused ? "Resume" : "Pause"}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {thread.paused
+                          ? "Let armed prompts send again"
+                          : "Hold armed prompts without disarming them"}
+                      </TooltipContent>
+                    </Tooltip>
+                  ) : null}
+                  <Tooltip>
+                    <TooltipTrigger asChild>
                       <Button
-                        size="sm"
+                        size="icon"
                         variant="ghost"
-                        className="h-6 px-2 text-xs"
-                        onClick={() =>
-                          void rpc
-                            .call("setPaused", {
-                              threadId: thread.threadId,
-                              paused: !thread.paused,
-                            })
-                            .then(refresh)
-                        }
+                        className="size-7"
+                        onClick={() => navigate.toThread(thread.threadId)}
+                        aria-label="Open thread"
                       >
-                        <Icon
-                          name={thread.paused ? "Play" : "Pause"}
-                          className="size-3"
-                          aria-hidden
-                        />
-                        {thread.paused ? "Resume" : "Pause"}
+                        <Icon name="ArrowUpRight" className="size-3.5" aria-hidden />
                       </Button>
-                    ) : null}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="pt-0">
+                    </TooltipTrigger>
+                    <TooltipContent>Open thread</TooltipContent>
+                  </Tooltip>
+                </CardHead>
+                <CardContent className="p-4 pt-0">
                   {thread.prompts.map((prompt, index) => (
                     <ManagerRow
                       key={prompt.id}
@@ -2418,37 +2596,67 @@ function ManagerPanel() {
 
           <div className="space-y-4 lg:col-span-2">
             <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <Icon name="Star" className="size-4 text-muted-foreground" aria-hidden />
-                  Snippets
-                  <span className="flex-1" />
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-6 px-2 text-xs"
-                    onClick={() =>
-                      setSnippetDraft({
-                        id: null,
-                        title: "",
-                        body: "",
-                        keywords: "",
-                        groupName: "",
-                      })
-                    }
-                  >
-                    <Icon name="Plus" className="size-3" aria-hidden />
-                    New
-                  </Button>
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 pt-0">
-                <Input
-                  value={snippetSearch}
-                  onChange={(event) => setSnippetSearch(event.target.value)}
-                  placeholder="Search snippets…"
-                  className="h-8 text-sm"
-                />
+              <CardHead
+                icon="Star"
+                title="Snippets"
+                meta="Reusable prompts — {{tokens}} become fill-in fields"
+              >
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 px-2 text-xs"
+                  onClick={() =>
+                    setSnippetDraft({
+                      id: null,
+                      title: "",
+                      body: "",
+                      keywords: "",
+                      groupName: "",
+                    })
+                  }
+                >
+                  <Icon name="Plus" className="size-3" aria-hidden />
+                  New
+                </Button>
+              </CardHead>
+              <CardContent className="space-y-2 p-4 pt-0">
+                <div className="relative">
+                  <Icon
+                    name="Search"
+                    className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+                    aria-hidden
+                  />
+                  <Input
+                    value={snippetSearch}
+                    onChange={(event) => setSnippetSearch(event.target.value)}
+                    placeholder="Search snippets…"
+                    className="h-8 pl-8 text-sm"
+                  />
+                </div>
+                {snippetGroups.length > 0 ? (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {snippetGroups.map((group) => (
+                      <button
+                        key={group}
+                        type="button"
+                        className={cn(
+                          "rounded-full border px-2 py-0.5 text-xs transition-colors",
+                          groupFilter === group
+                            ? "border-primary/40 bg-primary/10 text-primary"
+                            : "border-border text-muted-foreground hover:bg-state-hover hover:text-foreground",
+                        )}
+                        onClick={() =>
+                          setGroupFilter((current) =>
+                            current === group ? null : group,
+                          )
+                        }
+                        aria-pressed={groupFilter === group}
+                      >
+                        {group}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 {visibleSnippets.length === 0 ? (
                   <p className="py-2 text-sm text-muted-foreground">
                     {snippetSearch.trim()
@@ -2540,18 +2748,13 @@ function ManagerPanel() {
             </Card>
 
             <Card>
-              <CardHeader className="pb-3">
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <Icon
-                    name="Clock"
-                    className="size-4 text-muted-foreground"
-                    aria-hidden
-                  />
-                  Recently used
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="pt-0">
-                {data === null || data.recentlyUsed.length === 0 ? (
+              <CardHead
+                icon="Clock"
+                title="Recently used"
+                meta="Consumed prompts — restore any of them"
+              />
+              <CardContent className="p-4 pt-0">
+                {data.recentlyUsed.length === 0 ? (
                   <p className="py-2 text-sm text-muted-foreground">
                     Nothing used yet.
                   </p>
@@ -2646,6 +2849,7 @@ function ManagerPanel() {
         onCancel={() => setFillIn(null)}
       />
     </div>
+    </TooltipProvider>
   );
 }
 
