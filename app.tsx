@@ -455,6 +455,7 @@ function PromptRow({
   onInject,
   onEdit,
   onSchedule,
+  onMove,
   onSaveAsSnippet,
   rpc,
   refresh,
@@ -470,6 +471,7 @@ function PromptRow({
   onInject: ((prompt: PromptDto) => void) | null;
   onEdit: (prompt: PromptDto) => void;
   onSchedule: (prompt: PromptDto) => void;
+  onMove: (index: number, direction: "up" | "down") => void;
   onSaveAsSnippet: (prompt: PromptDto) => void;
   rpc: Rpc;
   refresh: () => void;
@@ -549,14 +551,35 @@ function PromptRow({
         isDragTarget && "border-t-2 border-primary",
       )}
     >
-      <Icon
-        name="DragDropVertical"
-        className={cn(
-          "mt-1 size-3 shrink-0 cursor-grab text-muted-foreground/40 group-hover:opacity-100",
-          alwaysShowActions ? "opacity-100" : "opacity-0",
-        )}
-        aria-hidden
-      />
+      {alwaysShowActions ? (
+        // Touch: HTML5 drag never fires, so show real reorder buttons.
+        <span className="flex shrink-0 flex-col">
+          <button
+            type="button"
+            className="flex h-4 w-5 items-center justify-center text-muted-foreground/60 disabled:opacity-25"
+            disabled={index === 0}
+            onClick={() => onMove(index, "up")}
+            aria-label="Move up"
+          >
+            <Icon name="ChevronUp" className="size-3.5" aria-hidden />
+          </button>
+          <button
+            type="button"
+            className="flex h-4 w-5 items-center justify-center text-muted-foreground/60 disabled:opacity-25"
+            disabled={index === count - 1}
+            onClick={() => onMove(index, "down")}
+            aria-label="Move down"
+          >
+            <Icon name="ChevronDown" className="size-3.5" aria-hidden />
+          </button>
+        </span>
+      ) : (
+        <Icon
+          name="DragDropVertical"
+          className="mt-1 size-3 shrink-0 cursor-grab text-muted-foreground/40 opacity-0 group-hover:opacity-100"
+          aria-hidden
+        />
+      )}
       <button
         type="button"
         className="min-w-0 flex-1 text-left"
@@ -678,6 +701,21 @@ function PromptRow({
               {prompt.scope === "global"
                 ? "Move to this thread"
                 : "Move to global"}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              disabled={index === 0}
+              onSelect={() => onMove(index, "up")}
+            >
+              <Icon name="ArrowUp" className="size-4" aria-hidden />
+              Move up
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={index === count - 1}
+              onSelect={() => onMove(index, "down")}
+            >
+              <Icon name="ArrowDown" className="size-4" aria-hidden />
+              Move down
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
@@ -1048,6 +1086,26 @@ function QueueView({
     },
   };
 
+  /** Swap-based reorder for menu items and touch arrow buttons. */
+  function movePrompt(index: number, direction: "up" | "down"): void {
+    if (searchActive) {
+      toast("Clear the filter to reorder");
+      return;
+    }
+    const target = direction === "up" ? index - 1 : index + 1;
+    if (target < 0 || target >= list.length) return;
+    const ordered = [...list];
+    const [moved] = ordered.splice(index, 1);
+    ordered.splice(target, 0, moved!);
+    void rpc
+      .call("reorderPrompts", {
+        scope: reorderScope,
+        threadId: reorderScope === "thread" ? threadId : null,
+        ids: ordered.map((prompt) => prompt.id),
+      })
+      .then(refresh);
+  }
+
   // ---- queue-level controls ----
 
   async function runQueue(): Promise<void> {
@@ -1303,6 +1361,7 @@ function QueueView({
                 setEditText(entry.text);
               }}
               onSchedule={setScheduling}
+              onMove={movePrompt}
               onSaveAsSnippet={saveAsSnippet}
               rpc={rpc}
               refresh={refresh}
