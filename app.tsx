@@ -947,6 +947,13 @@ function QueueView({
     if (activeTab === "snippets") refreshSnippets();
     if (activeTab === "thread") refreshNative();
   });
+  // Backstop poll: native-queue writes from the composer emit no plugin
+  // signal, so refetch periodically while the thread tab is showing.
+  useEffect(() => {
+    if (activeTab !== "thread" || threadId === null) return;
+    const timer = setInterval(refreshNative, 5_000);
+    return () => clearInterval(timer);
+  }, [activeTab, threadId, refreshNative]);
 
   const filter = useCallback(
     (prompts: PromptDto[]) => {
@@ -1137,14 +1144,39 @@ function QueueView({
 
   function pushToNative(prompt: PromptDto): void {
     if (threadId === null) return;
-    void rpc
-      .call("pushToNativeQueue", { id: prompt.id, threadId })
-      .then(({ pushed, error }) => {
-        refresh();
-        refreshNative();
-        if (pushed) toast.success("Moved to bb's queue — sends with the next turn");
-        else toast.error(error ?? "Push failed");
-      });
+    const doPush = (text: string) => {
+      const send = () =>
+        rpc.call("pushToNativeQueue", { id: prompt.id, threadId }).then(
+          ({ pushed, error }) => {
+            refresh();
+            refreshNative();
+            if (pushed)
+              toast.success("Moved to bb's queue — sends with the next turn");
+            else toast.error(error ?? "Push failed");
+          },
+        );
+      // Fill-ins resolved? Persist the filled text before pushing so the
+      // native queue receives the final prompt, not the template.
+      if (text !== prompt.text) {
+        void rpc.call("updatePrompt", { id: prompt.id, text }).then(send);
+      } else {
+        void send();
+      }
+    };
+    withFillIns(prompt.text, previewText(prompt.text).slice(0, 40), doPush);
+  }
+
+  function stashAll(): void {
+    if (threadId === null) return;
+    void rpc.call("stashAllNative", { threadId }).then(({ stashed, skipped }) => {
+      refresh();
+      refreshNative();
+      if (stashed > 0)
+        toast.success(
+          `Stashed ${stashed} message${stashed === 1 ? "" : "s"} — nothing sends until you say so`,
+        );
+      if (skipped > 0) toast(`${skipped} non-text message(s) left in place`);
+    });
   }
 
   function stashNative(item: NativeQueueItem): void {
@@ -1364,10 +1396,27 @@ function QueueView({
       >
         {activeTab === "thread" && nativeItems.length > 0 ? (
           <div className="mb-1 border-b border-border pb-1">
-            <p className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-muted-foreground">
-              <Icon name="Sent" className="size-3" aria-hidden />
-              In bb's queue — sends automatically
-            </p>
+            <div className="flex items-center gap-1.5 px-2 py-1">
+              <Icon
+                name="Sent"
+                className="size-3 text-muted-foreground"
+                aria-hidden
+              />
+              <span className="flex-1 text-xs font-medium text-muted-foreground">
+                In bb's queue — sends automatically
+              </span>
+              {nativeItems.length > 1 ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-5 px-1.5 text-xs"
+                  onClick={stashAll}
+                  aria-label="Stash all: stop auto-delivery and keep everything here"
+                >
+                  Stash all
+                </Button>
+              ) : null}
+            </div>
             {nativeItems.map((item) => (
               <div
                 key={item.id}
@@ -1441,7 +1490,9 @@ function QueueView({
               ? "Nothing used yet."
               : searchActive
                 ? "No prompts match."
-                : "No queued prompts. Write one below while the agent works."}
+                : activeTab === "thread" && nativeItems.length > 0
+                  ? "Nothing stashed. The messages above send automatically — stash one to hold it."
+                  : "No queued prompts. Write one below while the agent works."}
           </p>
         ) : activeTab === "used" ? (
           list.map((prompt) => (

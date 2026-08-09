@@ -152,6 +152,10 @@ export const rpcContract = defineRpcContract({
       .strict(),
     output: z.object({ prompt: promptSchema.nullable(), error: z.string().nullable() }),
   },
+  stashAllNative: {
+    input: z.object({ threadId: z.string() }).strict(),
+    output: z.object({ stashed: z.number(), skipped: z.number() }),
+  },
   sendNativeNow: {
     input: z
       .object({ threadId: z.string(), queuedMessageId: z.string() })
@@ -454,6 +458,45 @@ export default function plugin(bb: BbPluginApi) {
       notify(threadId);
       return { prompt, error: null };
     },
+    async stashAllNative({ threadId }) {
+      const messages = await bb.sdk.threads.queuedMessages.list({ threadId });
+      let stashed = 0;
+      let skipped = 0;
+      for (const message of messages) {
+        const text = message.content
+          .filter(
+            (part): part is Extract<typeof part, { type: "text" }> =>
+              part.type === "text",
+          )
+          .map((part) => part.text)
+          .join("\n")
+          .trim();
+        if (!text) {
+          skipped += 1;
+          continue;
+        }
+        const prompt = store.addPrompt({
+          text,
+          scope: "thread",
+          threadId,
+          autoSend: false,
+        });
+        try {
+          await bb.sdk.threads.queuedMessages.delete({
+            threadId,
+            queuedMessageId: message.id,
+          });
+          stashed += 1;
+        } catch {
+          // Copy-then-delete: an undeletable message must not leave a
+          // duplicate in the stash.
+          db.prepare(`DELETE FROM prompts WHERE id = ?`).run(prompt.id);
+          skipped += 1;
+        }
+      }
+      notify(threadId);
+      return { stashed, skipped };
+    },
     async sendNativeNow({ threadId, queuedMessageId }) {
       try {
         await bb.sdk.threads.queuedMessages.send({
@@ -517,6 +560,7 @@ export default function plugin(bb: BbPluginApi) {
   }
 
   bb.events.on("thread.idle", ({ thread }) => {
+    notify(thread.id);
     if (!store.nextArmed(thread.id)) return;
     cancelIdleTimer(thread.id);
     void settings.get().then(({ autoSendDelaySeconds }) => {
@@ -538,6 +582,9 @@ export default function plugin(bb: BbPluginApi) {
 
   bb.events.on("thread.active", ({ thread }) => {
     cancelIdleTimer(thread.id);
+    // Native queued messages deliver at turn boundaries — nudge any open
+    // popover/panel to refetch its "In bb's queue" section.
+    notify(thread.id);
   });
 
   bb.events.on("thread.deleted", ({ thread }) => {
@@ -594,6 +641,11 @@ export default function plugin(bb: BbPluginApi) {
         name: "push",
         summary: "Move a queued prompt into bb's native queue (auto-delivers next turn)",
         usage: "bb prompts push <id>",
+      },
+      {
+        name: "stash",
+        summary: "Pull ALL of bb's queued messages for this thread into the stash (stops auto-delivery)",
+        usage: "bb prompts stash",
       },
       { name: "arm", summary: "Arm/disarm auto-send for a prompt", usage: "bb prompts arm|disarm <id>" },
       { name: "run", summary: "Arm every queued prompt in this thread (drain in order)", usage: "bb prompts run" },
@@ -713,6 +765,42 @@ export default function plugin(bb: BbPluginApi) {
           }
           notify(threadId);
           return { exitCode: 0, stdout: `Pushed ${id} to bb's queue.` };
+        }
+        case "stash": {
+          if (threadId === null) return fail("Not in a thread.");
+          const messages = await bb.sdk.threads.queuedMessages.list({ threadId });
+          let stashed = 0;
+          for (const message of messages) {
+            const text = message.content
+              .filter(
+                (part): part is Extract<typeof part, { type: "text" }> =>
+                  part.type === "text",
+              )
+              .map((part) => part.text)
+              .join("\n")
+              .trim();
+            if (!text) continue;
+            const prompt = store.addPrompt({
+              text,
+              scope: "thread",
+              threadId,
+              autoSend: false,
+            });
+            try {
+              await bb.sdk.threads.queuedMessages.delete({
+                threadId,
+                queuedMessageId: message.id,
+              });
+              stashed += 1;
+            } catch {
+              db.prepare(`DELETE FROM prompts WHERE id = ?`).run(prompt.id);
+            }
+          }
+          notify(threadId);
+          return {
+            exitCode: 0,
+            stdout: `Stashed ${stashed} message(s) — they will not auto-send.`,
+          };
         }
         case "arm":
         case "disarm": {
