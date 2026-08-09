@@ -53,6 +53,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { usePointerCoarse } from "@/components/ui/hooks/use-pointer-coarse";
@@ -1389,20 +1390,20 @@ function QueueView({
           />
           <div className="mt-2 flex items-center justify-between gap-2">
             {hasThreadTab && activeTab !== "global" ? (
-              <button
-                type="button"
+              <label
                 className={cn(
-                  "inline-flex items-center gap-1.5 text-xs transition-colors",
-                  armDraft
-                    ? "text-primary"
-                    : "text-muted-foreground hover:text-foreground",
+                  "inline-flex cursor-pointer select-none items-center gap-2 text-xs transition-colors",
+                  armDraft ? "text-primary" : "text-muted-foreground",
                 )}
-                onClick={() => setArmDraft((value) => !value)}
                 title="Send automatically when the agent finishes its current work"
               >
-                <Icon name="TimeSchedule" className="size-3.5" aria-hidden />
-                {armDraft ? "Will auto-send on idle" : "Auto-send on idle"}
-              </button>
+                <Switch
+                  checked={armDraft}
+                  onCheckedChange={(checked) => setArmDraft(checked === true)}
+                  aria-label="Auto-send on idle"
+                />
+                Auto-send on idle
+              </label>
             ) : (
               <span />
             )}
@@ -1489,7 +1490,32 @@ function QueueButton() {
     );
   });
 
+  // Button state, in priority order: failed > paused > armed > queued > idle.
   const pending = data.threadPrompts.length + data.globalPrompts.length;
+  const armedCount = data.threadPrompts.filter((p) => p.autoSend).length;
+  const failedCount =
+    data.threadPrompts.filter((p) => p.lastError !== null).length +
+    data.globalPrompts.filter((p) => p.lastError !== null).length;
+  const state =
+    failedCount > 0
+      ? "failed"
+      : data.paused && armedCount > 0
+        ? "paused"
+        : armedCount > 0
+          ? "armed"
+          : pending > 0
+            ? "queued"
+            : "idle";
+  const stateLabel =
+    state === "failed"
+      ? `Prompts — ${failedCount} send${failedCount === 1 ? "" : "s"} failed, re-queued`
+      : state === "paused"
+        ? `Prompts — auto-send paused, ${armedCount} armed`
+        : state === "armed"
+          ? `Prompts — ${armedCount} of ${pending} armed to auto-send`
+          : state === "queued"
+            ? `Prompts — ${pending} queued`
+            : "Prompts — queue & snippets";
 
   const insertText = useCallback(
     (text: string): boolean => {
@@ -1512,27 +1538,45 @@ function QueueButton() {
       <PopoverTrigger asChild>
         <button
           type="button"
+          // Self-contained pill: the count lives INSIDE the 28px-tall
+          // bounds, so the composer row's clamping can never clip it.
           className={cn(
-            "relative flex h-7 w-7 items-center justify-center rounded-md border border-input",
-            "text-muted-foreground transition-colors hover:bg-state-hover hover:text-foreground",
+            "flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border border-input transition-colors hover:bg-state-hover",
+            pending > 0 ? "px-1.5" : "w-7",
+            open && "bg-state-hover",
+            state === "failed"
+              ? "text-destructive hover:text-destructive"
+              : state === "armed" || state === "paused"
+                ? "text-primary hover:text-primary"
+                : "text-muted-foreground hover:text-foreground",
           )}
-          aria-label={
-            pending > 0 ? `Prompts (${pending} queued)` : "Prompts"
-          }
-          title="Prompts — queue & snippets"
+          aria-label={stateLabel}
+          title={stateLabel}
         >
-          <Icon name="ListTodo" className="size-4" aria-hidden />
+          <Icon
+            name={
+              state === "failed"
+                ? "AlertCircle"
+                : state === "paused"
+                  ? "Pause"
+                  : state === "armed"
+                    ? "TimeSchedule"
+                    : "ListTodo"
+            }
+            className="size-4"
+            aria-hidden
+          />
           {pending > 0 ? (
             <span
-              className="absolute -right-1 -top-1 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-primary px-0.5 text-[9px] font-medium leading-none text-primary-foreground"
+              className="text-[10px] font-medium leading-none tabular-nums"
               aria-hidden
             >
-              {pending > 9 ? "9+" : pending}
+              {pending > 99 ? "99+" : pending}
             </span>
           ) : null}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-96 p-0">
+      <PopoverContent align="end" className="w-96 p-0" mobileRepositionInputs>
         <QueueView threadId={threadId} onInsertText={insertText} />
       </PopoverContent>
     </Popover>

@@ -125,6 +125,12 @@ const PopoverContent = React.forwardRef<
     mobileTitle?: string;
     /** Class name applied to the DrawerContent wrapper on mobile. */
     mobileClassName?: string;
+    /**
+     * Let vaul reposition the drawer when the on-screen keyboard opens.
+     * Off by default (host behavior); turn on for drawers with text inputs
+     * near the bottom, or the keyboard covers them.
+     */
+    mobileRepositionInputs?: boolean;
   }
 >(
   (
@@ -135,6 +141,7 @@ const PopoverContent = React.forwardRef<
       children,
       mobileTitle,
       mobileClassName,
+      mobileRepositionInputs = false,
       ...props
     },
     ref,
@@ -155,7 +162,7 @@ const PopoverContent = React.forwardRef<
           onOpenChange={onOpenChange}
           srLabel={mobileTitle ?? "Options"}
           contentClassName={mobileClassName}
-          repositionInputs={false}
+          repositionInputs={mobileRepositionInputs}
         >
           <div
             ref={ref}
