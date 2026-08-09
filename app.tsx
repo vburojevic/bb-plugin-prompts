@@ -1079,7 +1079,17 @@ function QueueView({
       : "Queue for this thread";
 
   return (
-    <div className={cn("flex flex-col", className)}>
+    <div
+      className={cn("flex flex-col", className)}
+      // The p-0 passed to PopoverContent strips the drawer's own safe-area
+      // padding on mobile; restore it here so the footer clears the home
+      // indicator instead of hiding under it.
+      style={
+        compactViewport
+          ? { paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }
+          : undefined
+      }
+    >
       <div className="space-y-2 border-b border-border p-2">
         <Tabs
           value={activeTab}
