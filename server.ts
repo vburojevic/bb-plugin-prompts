@@ -1,236 +1,61 @@
 // bb-plugin-prompts — backend entry.
 //
 // Two complementary stores over one SQLite db:
-// - QUEUE: one-shot prompts written while agents are busy, scoped to a
-//   thread or global. Injected into the composer (consume + undo), sent to
-//   any thread, ARMED to auto-send when their thread goes idle, or scheduled
-//   for a specific time. Claims are atomic UPDATEs so duplicate idle events
-//   or sweep races can never double-send.
-// - SNIPPETS: reusable, titled, keyworded prompts with {{fill-in}} tokens,
-//   merged in from the retired prompt-snippets plugin. Inserting never
-//   consumes them.
+// - QUEUE: one-shot prompts written while agents are busy, scoped to a thread,
+//   a project, or globally. Injected into the composer (consume + undo), sent
+//   to any thread, ARMED to auto-send when their thread goes idle, or scheduled
+//   for a specific time. Claims are atomic UPDATEs so duplicate idle events or
+//   sweep races can never double-send.
+// - SNIPPETS: reusable, titled, keyworded prompts with {{fill-in}} tokens.
+//   Inserting never consumes them.
 //
-// Auto-send waits an idle-delay grace period (setting) and is cancelled if
-// the thread goes active again — thread.idle also fires when the agent is
-// waiting for the user's answer, and barging into that exchange is wrong.
-import { defineRpcContract, type BbPluginApi } from "@bb/plugin-sdk";
-import { z } from "zod";
-import { createStore, MIGRATIONS, type Prompt } from "./lib/store";
+// Auto-send waits an idle-delay grace period (setting) and is cancelled if the
+// thread goes active again — thread.idle also fires when the agent is waiting
+// for the user's answer, and barging into that exchange is wrong.
+//
+// A thread ending is not the end of its prompts: they move to the project's
+// queue, so the next session in that project still has the user's writing.
+import type { BbPluginApi } from "@bb/plugin-sdk";
+import { rpcContract } from "./lib/contract";
+import { registerAgentTools } from "./lib/agent-tools";
+import { CLI_COMMANDS, createCliRunner } from "./lib/cli";
+import { toHistoryPrompt, type HistoryEntryLike } from "./lib/history";
+import { createMiner } from "./lib/mining";
+import {
+  createOperations,
+  USED_KEEP,
+  type PromptsHost,
+  type Signal,
+  type ThreadInfo,
+} from "./lib/operations";
+import { errorText } from "./lib/queued-messages";
+import { createStore, MIGRATIONS, type ScopeRef } from "./lib/store";
+import type { HistoryPrompt } from "./lib/suggest";
+import { parseTokens } from "./lib/template";
+
+export { rpcContract } from "./lib/contract";
 
 const REALTIME_CHANNEL = "prompts";
-const PROMPT_TEXT_CAP = 32_000;
-const USED_KEEP = 60;
 const DEFAULT_IDLE_DELAY_SECONDS = 20;
-
-const scopeSchema = z.enum(["thread", "global"]);
-
-const promptSchema = z.object({
-  id: z.string(),
-  scope: scopeSchema,
-  threadId: z.string().nullable(),
-  text: z.string(),
-  status: z.enum(["queued", "used"]),
-  autoSend: z.boolean(),
-  sendAt: z.number().nullable(),
-  position: z.number(),
-  lastError: z.string().nullable(),
-  createdAt: z.number(),
-  updatedAt: z.number(),
-  usedAt: z.number().nullable(),
-  usedVia: z
-    .enum(["inject", "auto-send", "cli", "scheduled", "cross-thread", "bb-queue"])
-    .nullable(),
-});
-
-const snippetSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  body: z.string(),
-  description: z.string(),
-  keywords: z.string(),
-  groupId: z.string().nullable(),
-  groupName: z.string().nullable(),
-  useCount: z.number(),
-  lastUsedAt: z.number().nullable(),
-  createdAt: z.number(),
-  updatedAt: z.number(),
-});
-
-export const rpcContract = defineRpcContract({
-  listPrompts: {
-    input: z.object({ threadId: z.string().nullable() }).strict(),
-    output: z.object({
-      threadPrompts: z.array(promptSchema),
-      globalPrompts: z.array(promptSchema),
-      recentlyUsed: z.array(promptSchema),
-      paused: z.boolean(),
-    }),
-  },
-  addPrompt: {
-    input: z
-      .object({
-        text: z.string().min(1).max(PROMPT_TEXT_CAP),
-        scope: scopeSchema,
-        threadId: z.string().nullable(),
-        autoSend: z.boolean(),
-        sendAt: z.number().nullable().optional(),
-      })
-      .strict(),
-    output: z.object({ prompt: promptSchema }),
-  },
-  updatePrompt: {
-    input: z
-      .object({
-        id: z.string(),
-        text: z.string().min(1).max(PROMPT_TEXT_CAP).optional(),
-        autoSend: z.boolean().optional(),
-        scope: scopeSchema.optional(),
-        sendAt: z.number().nullable().optional(),
-      })
-      .strict(),
-    output: z.object({ prompt: promptSchema.nullable() }),
-  },
-  deletePrompt: {
-    input: z.object({ id: z.string() }).strict(),
-    output: z.object({ deleted: z.boolean(), prompt: promptSchema.nullable() }),
-  },
-  consumePrompt: {
-    input: z.object({ id: z.string(), via: z.enum(["inject", "cli"]) }).strict(),
-    output: z.object({ prompt: promptSchema.nullable() }),
-  },
-  restorePrompt: {
-    input: z.object({ id: z.string() }).strict(),
-    output: z.object({ prompt: promptSchema.nullable() }),
-  },
-  reorderPrompts: {
-    input: z
-      .object({
-        scope: scopeSchema,
-        threadId: z.string().nullable(),
-        ids: z.array(z.string()).max(500),
-      })
-      .strict(),
-    output: z.object({ reordered: z.boolean() }),
-  },
-  armAll: {
-    input: z.object({ threadId: z.string() }).strict(),
-    output: z.object({ armed: z.number() }),
-  },
-  disarmThread: {
-    input: z.object({ threadId: z.string() }).strict(),
-    output: z.object({ disarmed: z.number() }),
-  },
-  setPaused: {
-    input: z.object({ threadId: z.string(), paused: z.boolean() }).strict(),
-    output: z.object({ paused: z.boolean() }),
-  },
-  listTargets: {
-    input: z.object({ excludeThreadId: z.string().nullable() }).strict(),
-    output: z.object({
-      threads: z.array(z.object({ id: z.string(), title: z.string() })),
-    }),
-  },
-  sendPromptToThread: {
-    input: z.object({ id: z.string(), threadId: z.string() }).strict(),
-    output: z.object({ sent: z.boolean(), error: z.string().nullable() }),
-  },
-  overview: {
-    input: z.null(),
-    output: z.object({
-      globalPrompts: z.array(promptSchema),
-      threads: z.array(
-        z.object({
-          threadId: z.string(),
-          title: z.string(),
-          paused: z.boolean(),
-          nativeCount: z.number(),
-          prompts: z.array(promptSchema),
-        }),
-      ),
-      snippets: z.array(snippetSchema),
-      recentlyUsed: z.array(promptSchema),
-    }),
-  },
-  listNativeQueue: {
-    input: z.object({ threadId: z.string() }).strict(),
-    output: z.object({
-      items: z.array(
-        z.object({ id: z.string(), text: z.string(), updatedAt: z.number() }),
-      ),
-    }),
-  },
-  pushToNativeQueue: {
-    input: z.object({ id: z.string(), threadId: z.string() }).strict(),
-    output: z.object({ pushed: z.boolean(), error: z.string().nullable() }),
-  },
-  stashNativeMessage: {
-    input: z
-      .object({ threadId: z.string(), queuedMessageId: z.string() })
-      .strict(),
-    output: z.object({ prompt: promptSchema.nullable(), error: z.string().nullable() }),
-  },
-  stashAllNative: {
-    input: z.object({ threadId: z.string() }).strict(),
-    output: z.object({ stashed: z.number(), skipped: z.number() }),
-  },
-  sendNativeNow: {
-    input: z
-      .object({ threadId: z.string(), queuedMessageId: z.string() })
-      .strict(),
-    output: z.object({ sent: z.boolean(), error: z.string().nullable() }),
-  },
-  listSnippets: {
-    input: z.object({ query: z.string() }).strict(),
-    output: z.object({ snippets: z.array(snippetSchema) }),
-  },
-  addSnippet: {
-    input: z
-      .object({
-        title: z.string().min(1).max(200),
-        body: z.string().min(1).max(PROMPT_TEXT_CAP),
-        description: z.string().max(500).optional(),
-        keywords: z.string().max(200).optional(),
-        groupName: z.string().max(100).nullable().optional(),
-      })
-      .strict(),
-    output: z.object({ snippet: snippetSchema }),
-  },
-  updateSnippet: {
-    input: z
-      .object({
-        id: z.string(),
-        title: z.string().min(1).max(200).optional(),
-        body: z.string().min(1).max(PROMPT_TEXT_CAP).optional(),
-        description: z.string().max(500).optional(),
-        keywords: z.string().max(200).optional(),
-        groupName: z.string().max(100).nullable().optional(),
-      })
-      .strict(),
-    output: z.object({ snippet: snippetSchema.nullable() }),
-  },
-  deleteSnippet: {
-    input: z.object({ id: z.string() }).strict(),
-    output: z.object({ deleted: z.boolean() }),
-  },
-  useSnippet: {
-    input: z.object({ id: z.string() }).strict(),
-    output: z.object({ snippet: snippetSchema.nullable() }),
-  },
-});
-
-/** CLI `--at` values: +30s, +5m, +2h, +1d, or an ISO-8601 timestamp. */
-export function parseWhen(raw: string, nowMs: number): number | null {
-  const relative = /^\+(\d+)([smhd])$/.exec(raw.trim());
-  if (relative) {
-    const amount = Number(relative[1]);
-    const unit = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 }[
-      relative[2] as "s" | "m" | "h" | "d"
-    ];
-    return nowMs + amount * unit;
-  }
-  const absolute = Date.parse(raw);
-  return Number.isNaN(absolute) ? null : absolute;
-}
+/** Prompt-history entries pulled per project/thread when mining for suggestions. */
+const HISTORY_LIMIT = 500;
+/**
+ * Recent threads whose history is mined. bb keeps prompt history per thread as
+ * well as per project, and the thread-scoped ones are the bulk of it — the
+ * follow-ups ("commit and push", "fix all issues") are typed inside threads,
+ * not into a project's new-thread composer.
+ */
+const THREAD_SCAN_LIMIT = 250;
+/** In-flight history requests. Enough to hide latency, few enough to be polite. */
+const HISTORY_CONCURRENCY = 8;
+/** Threads whose details are fetched in parallel for the overview panel. */
+const OVERVIEW_CONCURRENCY = 8;
+/** Groups the manager expands. Anything past this is reported, never dropped silently. */
+const OVERVIEW_THREAD_LIMIT = 20;
+const OVERVIEW_PROJECT_LIMIT = 20;
+/** Threads offered by "send to thread", and how many are scanned to find them. */
+const TARGET_LIMIT = 15;
+const TARGET_SCAN = 60;
 
 export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
@@ -243,357 +68,529 @@ export default function plugin(bb: BbPluginApi) {
       label: "Auto-send idle delay (seconds)",
       default: String(DEFAULT_IDLE_DELAY_SECONDS),
     },
+    threadEnd: {
+      type: "select",
+      label: "When a thread is archived or deleted",
+      options: ["keep for the project", "delete"],
+      default: "keep for the project",
+    },
+    mineHistory: {
+      type: "select",
+      label: "Suggest snippets from prompt history",
+      options: ["on", "off"],
+      default: "on",
+    },
   });
 
-  function notify(
-    threadId: string | null,
-    kind: "changed" | "send-failed" | "auto-sent" = "changed",
-    message?: string,
-  ): void {
+  // Settings are read on the thread-idle path, which must stay synchronous:
+  // awaiting a settings read there opened a window where `thread.active` could
+  // not cancel a timer that had not been created yet, and the prompt fired
+  // into a running agent. Cache the values and refresh on change instead.
+  let idleDelayMs = DEFAULT_IDLE_DELAY_SECONDS * 1_000;
+  let threadEndMode: "promote" | "delete" = "promote";
+  let mineHistory = true;
+
+  function applySettings(values: {
+    autoSendDelaySeconds?: string;
+    threadEnd?: string;
+    mineHistory?: string;
+  }): void {
+    const seconds = Number(values.autoSendDelaySeconds);
+    // `Number("") === 0`, and "0 seconds" is a legitimate choice — only a
+    // genuinely unparseable value falls back to the default.
+    idleDelayMs =
+      Number.isFinite(seconds) && seconds >= 0
+        ? Math.min(seconds, 3_600) * 1_000
+        : DEFAULT_IDLE_DELAY_SECONDS * 1_000;
+    threadEndMode = values.threadEnd === "delete" ? "delete" : "promote";
+    mineHistory = values.mineHistory !== "off";
+  }
+
+  void settings
+    .get()
+    .then(applySettings)
+    .catch(() => {
+      /* defaults already applied */
+    });
+  settings.onChange((next) => applySettings(next));
+
+  let disposed = false;
+
+  function notify(signal: Signal): void {
     try {
-      bb.realtime.publish(REALTIME_CHANNEL, { kind, threadId, message });
+      bb.realtime.publish(REALTIME_CHANNEL, signal);
     } catch {
       // Best-effort; the UI refetches when reopened.
     }
   }
 
-  const pausedKey = (threadId: string) => `paused:${threadId}`;
-  async function isPaused(threadId: string): Promise<boolean> {
-    return (await bb.storage.kv.get<boolean>(pausedKey(threadId))) === true;
-  }
-
-  async function sendPrompt(
-    prompt: Prompt,
-    threadId: string,
-    via: "auto-send" | "scheduled" | "cross-thread" | "cli",
-  ): Promise<{ sent: boolean; error: string | null }> {
-    const claimed = store.claimPrompt(prompt.id, via);
-    if (!claimed) return { sent: false, error: "Already sent or deleted." };
-    try {
+  // ---- The bb surface this plugin uses, as plain functions ----
+  const host: PromptsHost = {
+    async send(threadId, text) {
       await bb.sdk.threads.send({
         threadId,
         mode: "auto",
-        input: [{ type: "text", text: claimed.text, mentions: [] }],
+        input: [{ type: "text", text, mentions: [] }],
       });
-      store.pruneUsed(USED_KEEP);
-      notify(claimed.threadId, "auto-sent");
-      if (claimed.threadId !== threadId) notify(threadId, "changed");
-      bb.log.info(`sent prompt ${claimed.id} to ${threadId} (${via})`);
-      return { sent: true, error: null };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      store.requeuePrompt(claimed.id, message);
-      notify(claimed.threadId, "send-failed", message);
-      bb.log.error(`send failed for prompt ${claimed.id}: ${message}`);
-      return { sent: false, error: message };
-    }
+    },
+    async getThread(threadId) {
+      const thread = await bb.sdk.threads.get({ threadId });
+      return thread as unknown as ThreadInfo;
+    },
+    async listThreads(options) {
+      const threads = await bb.sdk.threads.list(options);
+      return threads as unknown as ThreadInfo[];
+    },
+    async listProjects() {
+      const projects = await bb.sdk.projects.list({ includePersonal: true });
+      return projects.map((project) => ({ id: project.id, name: project.name }));
+    },
+    async projectHistory(projectId, limit) {
+      const entries = await bb.sdk.projects.promptHistory({
+        projectId,
+        limit: String(limit),
+      });
+      return entries as unknown as HistoryEntryLike[];
+    },
+    async threadHistory(threadId, limit) {
+      const entries = await bb.sdk.threads.promptHistory({
+        threadId,
+        limit: String(limit),
+      });
+      return entries as unknown as HistoryEntryLike[];
+    },
+    async listQueuedMessages(threadId) {
+      const messages = await bb.sdk.threads.queuedMessages.list({ threadId });
+      return messages.map((message) => ({
+        id: message.id,
+        content: message.content as { type: string; text?: string }[],
+        updatedAt: message.updatedAt,
+      }));
+    },
+    async createQueuedMessage(threadId, text) {
+      await bb.sdk.threads.queuedMessages.create({
+        threadId,
+        input: [{ type: "text", text, mentions: [] }],
+      });
+    },
+    async deleteQueuedMessage(threadId, queuedMessageId) {
+      await bb.sdk.threads.queuedMessages.delete({ threadId, queuedMessageId });
+    },
+    async sendQueuedMessage(threadId, queuedMessageId) {
+      await bb.sdk.threads.queuedMessages.send({
+        threadId,
+        queuedMessageId,
+        mode: "auto",
+      });
+    },
+  };
+
+  const operations = createOperations({
+    store,
+    host,
+    notify,
+    log: bb.log,
+    threadEndMode: () => threadEndMode,
+  });
+
+  /** Run `task` over `items` with at most `limit` in flight. */
+  async function mapLimit<T, R>(
+    items: T[],
+    limit: number,
+    task: (item: T) => Promise<R>,
+  ): Promise<R[]> {
+    const results = new Array<R>(items.length);
+    let cursor = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(limit, items.length) }, async () => {
+        while (cursor < items.length) {
+          const index = cursor;
+          cursor += 1;
+          results[index] = await task(items[index]!);
+        }
+      }),
+    );
+    return results;
   }
 
+  /**
+   * Every project's and every recent thread's prompt history, flattened and
+   * stripped of injected input. One unreadable source is skipped rather than
+   * sinking the whole scan.
+   */
+  async function loadHistory(): Promise<HistoryPrompt[]> {
+    async function read(
+      label: string,
+      load: () => Promise<HistoryEntryLike[]>,
+    ): Promise<HistoryPrompt[]> {
+      try {
+        const entries = await load();
+        return entries.flatMap(toHistoryPrompt);
+      } catch (error) {
+        if (!disposed)
+          bb.log.warn(`prompt history unavailable for ${label}: ${errorText(error)}`);
+        return [];
+      }
+    }
+
+    // No `archived` filter: archived threads are most of this history and hold
+    // the finished workflows worth templating. Hidden threads stay out — that
+    // is `includeHidden` defaulting to false, and it is exactly right here,
+    // because hidden threads are plugins briefing agents, not the user typing.
+    const [projects, threads] = await Promise.all([
+      host.listProjects(),
+      host.listThreads({ limit: THREAD_SCAN_LIMIT }),
+    ]);
+
+    const [perProject, perThread] = await Promise.all([
+      mapLimit(projects, HISTORY_CONCURRENCY, (project) =>
+        read(project.id, () => host.projectHistory(project.id, HISTORY_LIMIT)),
+      ),
+      mapLimit(threads, HISTORY_CONCURRENCY, (thread) =>
+        read(thread.id, () => host.threadHistory(thread.id, HISTORY_LIMIT)),
+      ),
+    ]);
+    const fromProjects = perProject.flat();
+    const fromThreads = perThread.flat();
+    if (!disposed)
+      bb.log.info(
+        `scanned ${projects.length} projects (${fromProjects.length} prompts) ` +
+          `and ${threads.length} threads (${fromThreads.length} prompts)`,
+      );
+    return [...fromProjects, ...fromThreads];
+  }
+
+  const miner = createMiner({
+    loadHistory,
+    existingBodies: () =>
+      store.listSnippets("", { limit: 500 }).snippets.map((snippet) => snippet.body),
+    dismissedKeys: () => store.listDismissedSuggestions(),
+    dismissedCount: () => store.countDismissedSuggestions(),
+    kvGet: (key) => bb.storage.kv.get(key),
+    kvSet: (key, value) => bb.storage.kv.set(key, value),
+    log: bb.log,
+    onMined: () =>
+      notify({
+        topic: "suggestions",
+        kind: "changed",
+        threadId: null,
+        projectId: null,
+      }),
+    isDisposed: () => disposed,
+    isEnabled: () => mineHistory,
+  });
+
+  const refOf = (input: {
+    scope: "thread" | "project" | "global";
+    threadId: string | null;
+    projectId: string | null;
+  }): ScopeRef => ({
+    scope: input.scope,
+    threadId: input.threadId,
+    projectId: input.projectId,
+  });
+
+  // ---- RPC ----
   bb.rpc.register(rpcContract, {
-    async listPrompts({ threadId }) {
+    listPrompts({ threadId, projectId }) {
       return {
         threadPrompts:
-          threadId === null ? [] : store.listQueued("thread", threadId),
-        globalPrompts: store.listQueued("global", null),
-        recentlyUsed: store.listRecentlyUsed(threadId, USED_KEEP / 2),
-        paused: threadId === null ? false : await isPaused(threadId),
+          threadId === null ? [] : store.listQueued({ scope: "thread", threadId }),
+        projectPrompts:
+          projectId === null
+            ? []
+            : store.listQueued({ scope: "project", projectId }),
+        globalPrompts: store.listQueued({ scope: "global" }),
+        recentlyUsed: store.listRecentlyUsed(threadId, projectId, USED_KEEP / 2),
+        paused: threadId === null ? false : store.isPaused(threadId),
       };
     },
     addPrompt(input) {
-      const prompt = store.addPrompt(input);
-      notify(prompt.threadId);
+      return operations.addPrompt(input);
+    },
+    updatePrompt({ id, ...fields }) {
+      const prompt = store.updatePromptFields(id, fields);
+      if (prompt)
+        notify({
+          topic: "queue",
+          kind: "changed",
+          threadId: prompt.threadId,
+          projectId: prompt.projectId,
+        });
       return { prompt };
     },
-    updatePrompt({ id, text, autoSend, scope, sendAt }) {
-      const existing = store.getPrompt(id);
-      if (!existing) return { prompt: null };
-      const nextScope = scope ?? existing.scope;
-      const nextThreadId = nextScope === "global" ? null : existing.threadId;
-      const nextAutoSend =
-        nextScope === "global" ? false : (autoSend ?? existing.autoSend);
-      const nextSendAt =
-        nextScope === "global"
-          ? null
-          : sendAt === undefined
-            ? existing.sendAt
-            : sendAt;
-      db.prepare(
-        `UPDATE prompts SET text = ?, auto_send = ?, scope = ?, thread_id = ?, send_at = ?, last_error = NULL, updated_at = ? WHERE id = ?`,
-      ).run(
-        text ?? existing.text,
-        nextAutoSend ? 1 : 0,
-        nextScope,
-        nextThreadId,
-        nextSendAt,
-        Date.now(),
-        id,
-      );
-      notify(existing.threadId);
-      return { prompt: store.getPrompt(id) };
+    movePrompt({ id, ...ref }) {
+      const before = store.getPrompt(id);
+      if (!before) return { prompt: null, error: "Prompt no longer exists." };
+      try {
+        const prompt = store.movePrompt(id, refOf(ref));
+        if (prompt) {
+          notify({
+            topic: "queue",
+            kind: "changed",
+            threadId: before.threadId,
+            projectId: before.projectId,
+          });
+          notify({
+            topic: "queue",
+            kind: "changed",
+            threadId: prompt.threadId,
+            projectId: prompt.projectId,
+          });
+        }
+        return { prompt, error: null };
+      } catch (error) {
+        return { prompt: null, error: errorText(error) };
+      }
     },
     deletePrompt({ id }) {
       const existing = store.getPrompt(id);
       if (!existing) return { deleted: false, prompt: null };
-      db.prepare(`DELETE FROM prompts WHERE id = ?`).run(id);
-      notify(existing.threadId);
+      store.deletePrompt(id);
+      notify({
+        topic: "queue",
+        kind: "changed",
+        threadId: existing.threadId,
+        projectId: existing.projectId,
+      });
       return { deleted: true, prompt: existing };
     },
     consumePrompt({ id, via }) {
       const prompt = store.claimPrompt(id, via);
       if (prompt) {
         store.pruneUsed(USED_KEEP);
-        notify(prompt.threadId);
+        notify({
+          topic: "queue",
+          kind: "changed",
+          threadId: prompt.threadId,
+          projectId: prompt.projectId,
+        });
       }
       return { prompt };
     },
     restorePrompt({ id }) {
       const prompt = store.requeuePrompt(id);
-      if (prompt) notify(prompt.threadId);
+      if (prompt)
+        notify({
+          topic: "queue",
+          kind: "changed",
+          threadId: prompt.threadId,
+          projectId: prompt.projectId,
+        });
       return { prompt };
     },
-    reorderPrompts({ scope, threadId, ids }) {
-      const reordered = store.reorderPrompts(
-        scope,
-        scope === "global" ? null : threadId,
-        ids,
-      );
-      if (reordered) notify(scope === "global" ? null : threadId);
+    reorderPrompts({ ids, ...ref }) {
+      const reordered = store.reorderPrompts(refOf(ref), ids);
+      if (reordered)
+        notify({
+          topic: "queue",
+          kind: "changed",
+          threadId: ref.threadId,
+          projectId: ref.projectId,
+        });
       return { reordered };
     },
     armAll({ threadId }) {
-      const result = db
-        .prepare(
-          `UPDATE prompts SET auto_send = 1, updated_at = ?
-           WHERE thread_id = ? AND status = 'queued' AND auto_send = 0`,
-        )
-        .run(Date.now(), threadId);
-      notify(threadId);
-      return { armed: result.changes };
+      const armed = store.setArmedForThread(threadId, true);
+      if (armed > 0)
+        notify({ topic: "queue", kind: "changed", threadId, projectId: null });
+      return { armed };
     },
     disarmThread({ threadId }) {
-      const result = db
-        .prepare(
-          `UPDATE prompts SET auto_send = 0, updated_at = ?
-           WHERE thread_id = ? AND status = 'queued' AND auto_send = 1`,
-        )
-        .run(Date.now(), threadId);
-      notify(threadId);
-      return { disarmed: result.changes };
+      const disarmed = store.setArmedForThread(threadId, false);
+      if (disarmed > 0)
+        notify({ topic: "queue", kind: "changed", threadId, projectId: null });
+      return { disarmed };
     },
-    async setPaused({ threadId, paused }) {
-      if (paused) await bb.storage.kv.set(pausedKey(threadId), true);
-      else await bb.storage.kv.delete(pausedKey(threadId));
-      notify(threadId);
+    setPaused({ threadId, paused }) {
+      store.setPaused(threadId, paused);
+      notify({ topic: "queue", kind: "changed", threadId, projectId: null });
       return { paused };
     },
-    async listTargets({ excludeThreadId }) {
-      const threads = await bb.sdk.threads.list({
+    async listTargets({ excludeThreadId, query }) {
+      const threads = await host.listThreads({
         archived: false,
-        limit: 25,
+        limit: TARGET_SCAN,
       });
+      const needle = (query ?? "").trim().toLowerCase();
+      const candidates = threads
+        .filter((thread) => thread.id !== excludeThreadId)
+        .map((thread) => ({
+          id: thread.id,
+          title: thread.title ?? thread.titleFallback ?? "Untitled thread",
+          projectId: thread.projectId ?? null,
+        }))
+        .filter(
+          (thread) => !needle || thread.title.toLowerCase().includes(needle),
+        );
       return {
-        threads: threads
-          .filter((thread) => thread.id !== excludeThreadId)
-          .slice(0, 15)
-          .map((thread) => ({
-            id: thread.id,
-            title: thread.title ?? thread.titleFallback ?? "Untitled thread",
-          })),
+        threads: candidates.slice(0, TARGET_LIMIT),
+        total: candidates.length,
       };
     },
-    async sendPromptToThread({ id, threadId }) {
-      const prompt = store.getPrompt(id);
-      if (!prompt || prompt.status !== "queued")
-        return { sent: false, error: "Prompt is no longer queued." };
-      return sendPrompt(prompt, threadId, "cross-thread");
+    sendPromptToThread({ id, threadId }) {
+      return operations.sendById(id, threadId, "cross-thread");
     },
     async overview() {
-      const threadIds = store.listQueuedThreadIds().slice(0, 20);
-      const threads = [];
-      for (const threadId of threadIds) {
-        let title = "Untitled thread";
-        try {
-          const thread = await bb.sdk.threads.get({ threadId });
-          title = thread.title ?? thread.titleFallback ?? title;
-        } catch {
-          // Thread fetch failing is cosmetic; keep the group visible.
-        }
-        let nativeCount = 0;
-        try {
-          nativeCount = (
-            await bb.sdk.threads.queuedMessages.list({ threadId })
-          ).length;
-        } catch {
-          // Native queue unavailable (e.g. archived) — show zero.
-        }
-        threads.push({
-          threadId,
-          title,
-          paused: await isPaused(threadId),
-          nativeCount,
-          prompts: store.listQueued("thread", threadId),
-        });
-      }
-      return {
-        globalPrompts: store.listQueued("global", null),
-        threads,
-        snippets: store.listSnippets(""),
-        recentlyUsed: store.listAllUsed(30),
-      };
-    },
-    async listNativeQueue({ threadId }) {
-      const messages = await bb.sdk.threads.queuedMessages.list({ threadId });
-      return {
-        items: messages.map((message) => ({
-          id: message.id,
-          text: message.content
-            .filter(
-              (part): part is Extract<typeof part, { type: "text" }> =>
-                part.type === "text",
-            )
-            .map((part) => part.text)
-            .join("\n"),
-          updatedAt: message.updatedAt,
-        })),
-      };
-    },
-    async pushToNativeQueue({ id, threadId }) {
-      const claimed = store.claimPrompt(id, "bb-queue");
-      if (!claimed) return { pushed: false, error: "Prompt is no longer queued." };
-      try {
-        await bb.sdk.threads.queuedMessages.create({
-          threadId,
-          input: [{ type: "text", text: claimed.text, mentions: [] }],
-        });
-        store.pruneUsed(USED_KEEP);
-        notify(claimed.threadId);
-        return { pushed: true, error: null };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        store.requeuePrompt(claimed.id, message);
-        notify(claimed.threadId);
-        return { pushed: false, error: message };
-      }
-    },
-    async stashNativeMessage({ threadId, queuedMessageId }) {
-      const messages = await bb.sdk.threads.queuedMessages.list({ threadId });
-      const message = messages.find((entry) => entry.id === queuedMessageId);
-      if (!message) return { prompt: null, error: "Message is no longer queued." };
-      const text = message.content
-        .filter(
-          (part): part is Extract<typeof part, { type: "text" }> =>
-            part.type === "text",
-        )
-        .map((part) => part.text)
-        .join("\n")
-        .trim();
-      if (!text)
-        return { prompt: null, error: "Only text messages can be stashed." };
-      // Copy first, then delete — a failed delete leaves a duplicate (safe),
-      // the other order could lose the message.
-      const prompt = store.addPrompt({
-        text,
-        scope: "thread",
-        threadId,
-        autoSend: false,
-      });
-      try {
-        await bb.sdk.threads.queuedMessages.delete({ threadId, queuedMessageId });
-      } catch (error) {
-        db.prepare(`DELETE FROM prompts WHERE id = ?`).run(prompt.id);
-        return {
-          prompt: null,
-          error: error instanceof Error ? error.message : String(error),
-        };
-      }
-      notify(threadId);
-      return { prompt, error: null };
-    },
-    async stashAllNative({ threadId }) {
-      const messages = await bb.sdk.threads.queuedMessages.list({ threadId });
-      let stashed = 0;
-      let skipped = 0;
-      for (const message of messages) {
-        const text = message.content
-          .filter(
-            (part): part is Extract<typeof part, { type: "text" }> =>
-              part.type === "text",
-          )
-          .map((part) => part.text)
-          .join("\n")
-          .trim();
-        if (!text) {
-          skipped += 1;
-          continue;
-        }
-        const prompt = store.addPrompt({
-          text,
-          scope: "thread",
-          threadId,
-          autoSend: false,
-        });
-        try {
-          await bb.sdk.threads.queuedMessages.delete({
+      const allThreadIds = store.listQueuedThreadIds();
+      const allProjectIds = store.listQueuedProjectIds();
+      const threadIds = allThreadIds.slice(0, OVERVIEW_THREAD_LIMIT);
+      const projectIds = allProjectIds.slice(0, OVERVIEW_PROJECT_LIMIT);
+
+      // Two round-trips per thread, so serial fetching cost seconds once a
+      // handful of threads had queues. Order is preserved by mapLimit.
+      const [threads, projectNames] = await Promise.all([
+        mapLimit(threadIds, OVERVIEW_CONCURRENCY, async (threadId) => {
+          const [thread, nativeCount] = await Promise.all([
+            // Thread fetch failing is cosmetic; keep the group visible.
+            host.getThread(threadId).catch(() => null),
+            host
+              .listQueuedMessages(threadId)
+              .then((messages) => messages.length)
+              // Native queue unavailable (e.g. archived) — show zero.
+              .catch(() => 0),
+          ]);
+          return {
             threadId,
-            queuedMessageId: message.id,
-          });
-          stashed += 1;
-        } catch {
-          // Copy-then-delete: an undeletable message must not leave a
-          // duplicate in the stash.
-          db.prepare(`DELETE FROM prompts WHERE id = ?`).run(prompt.id);
-          skipped += 1;
-        }
-      }
-      notify(threadId);
-      return { stashed, skipped };
+            title: thread?.title ?? thread?.titleFallback ?? "Untitled thread",
+            projectId: thread?.projectId ?? null,
+            paused: store.isPaused(threadId),
+            nativeCount,
+            prompts: store.listQueued({ scope: "thread", threadId }),
+          };
+        }),
+        host
+          .listProjects()
+          .then(
+            (projects) => new Map(projects.map((project) => [project.id, project.name])),
+          )
+          .catch(() => new Map<string, string>()),
+      ]);
+
+      const { snippets, total: snippetTotal } = store.listSnippets("");
+      return {
+        globalPrompts: store.listQueued({ scope: "global" }),
+        projects: projectIds.map((projectId) => ({
+          projectId,
+          name: projectNames.get(projectId) ?? "Unknown project",
+          prompts: store.listQueued({ scope: "project", projectId }),
+        })),
+        threads,
+        snippets,
+        snippetTotal,
+        recentlyUsed: store.listAllUsed(30),
+        hiddenThreads: allThreadIds.length - threadIds.length,
+        hiddenProjects: allProjectIds.length - projectIds.length,
+      };
     },
-    async sendNativeNow({ threadId, queuedMessageId }) {
-      try {
-        await bb.sdk.threads.queuedMessages.send({
-          threadId,
-          queuedMessageId,
-          mode: "auto",
-        });
-        notify(threadId);
-        return { sent: true, error: null };
-      } catch (error) {
-        return {
-          sent: false,
-          error: error instanceof Error ? error.message : String(error),
-        };
-      }
+    listNativeQueue({ threadId }) {
+      return operations.listNative(threadId);
     },
-    listSnippets({ query }) {
-      return { snippets: store.listSnippets(query) };
+    pushToNativeQueue({ id, threadId }) {
+      return operations.pushToNative(id, threadId);
+    },
+    stashNativeMessage({ threadId, queuedMessageId }) {
+      return operations.stashOneNative(threadId, queuedMessageId);
+    },
+    stashAllNative({ threadId }) {
+      return operations.stashAllNative(threadId);
+    },
+    sendNativeNow({ threadId, queuedMessageId }) {
+      return operations.sendNativeNow(threadId, queuedMessageId);
+    },
+    queueSnippetGroup({ groupName, ...ref }) {
+      return operations.queueSnippetGroup(refOf(ref), groupName);
+    },
+    suggestSnippets({ refresh }) {
+      return miner.read(refresh);
+    },
+    dismissSuggestion({ key, body }) {
+      store.dismissSuggestion(key, body);
+      notify({
+        topic: "suggestions",
+        kind: "changed",
+        threadId: null,
+        projectId: null,
+      });
+      return { dismissed: true };
+    },
+    restoreSuggestions() {
+      const restored = store.clearDismissedSuggestions();
+      notify({
+        topic: "suggestions",
+        kind: "changed",
+        threadId: null,
+        projectId: null,
+      });
+      return { restored };
+    },
+    listSnippets({ query, projectId }) {
+      return store.listSnippets(query, { projectId });
     },
     addSnippet(input) {
       const snippet = store.addSnippet(input);
-      notify(null);
+      notify({
+        topic: "snippets",
+        kind: "changed",
+        threadId: null,
+        projectId: snippet.projectId,
+      });
       return { snippet };
     },
     updateSnippet(input) {
       const snippet = store.updateSnippet(input);
-      if (snippet) notify(null);
+      if (snippet)
+        notify({
+          topic: "snippets",
+          kind: "changed",
+          threadId: null,
+          projectId: snippet.projectId,
+        });
       return { snippet };
     },
     deleteSnippet({ id }) {
       const deleted = store.deleteSnippet(id);
-      if (deleted) notify(null);
+      if (deleted)
+        notify({
+          topic: "snippets",
+          kind: "changed",
+          threadId: null,
+          projectId: null,
+        });
       return { deleted };
     },
     useSnippet({ id }) {
       store.touchSnippet(id);
       return { snippet: store.getSnippet(id) };
     },
+    fillValues({ tokens }) {
+      return { values: store.fillValuesFor(tokens) };
+    },
+    rememberFillValues({ values }) {
+      store.rememberFillValues(values);
+      return { saved: true };
+    },
   });
 
   // ---- Auto-send with idle-delay guard ----
   //
-  // thread.idle also fires when the agent stops to ask the user a question,
-  // so firing instantly would barge into a live exchange. Instead we wait
+  // thread.idle also fires when the agent stops to ask the user a question, so
+  // firing instantly would barge into a live exchange. Instead we wait
   // `autoSendDelaySeconds`; thread.active during the window cancels the timer.
+  //
+  // The whole handler is synchronous by construction. An `await` between the
+  // idle event and `setTimeout` would let a `thread.active` in that window fail
+  // to cancel a timer that did not exist yet — and the prompt would then fire
+  // into a running agent. The epoch is the second lock on that door: a timer
+  // whose thread has since transitioned does nothing when it wakes.
   const idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const threadEpoch = new Map<string, number>();
+
+  function bumpEpoch(threadId: string): number {
+    const next = (threadEpoch.get(threadId) ?? 0) + 1;
+    threadEpoch.set(threadId, next);
+    return next;
+  }
 
   function cancelIdleTimer(threadId: string): void {
     const timer = idleTimers.get(threadId);
@@ -603,361 +600,161 @@ export default function plugin(bb: BbPluginApi) {
     }
   }
 
-  async function drainOne(threadId: string): Promise<void> {
-    if (await isPaused(threadId)) return;
-    const next = store.nextArmed(threadId);
-    if (!next) return;
-    await sendPrompt(next, threadId, "auto-send");
-  }
-
   bb.events.on("thread.idle", ({ thread }) => {
-    notify(thread.id);
+    if (store.countQueued(thread.id) === 0) return;
+    notify({
+      topic: "queue",
+      kind: "changed",
+      threadId: thread.id,
+      projectId: thread.projectId ?? null,
+    });
     if (!store.nextArmed(thread.id)) return;
     cancelIdleTimer(thread.id);
-    void settings.get().then(({ autoSendDelaySeconds }) => {
-      const delay = Math.max(
-        0,
-        Number(autoSendDelaySeconds) || DEFAULT_IDLE_DELAY_SECONDS,
-      );
-      const timer = setTimeout(() => {
-        idleTimers.delete(thread.id);
-        void drainOne(thread.id).catch((error) => {
-          bb.log.error(
-            `auto-send drain failed: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        });
-      }, delay * 1_000);
-      idleTimers.set(thread.id, timer);
-    });
+    const epoch = bumpEpoch(thread.id);
+    const timer = setTimeout(() => {
+      idleTimers.delete(thread.id);
+      if (threadEpoch.get(thread.id) !== epoch) return;
+      void operations.drainOne(thread.id).catch((error) => {
+        bb.log.error(`auto-send drain failed: ${errorText(error)}`);
+      });
+    }, idleDelayMs);
+    idleTimers.set(thread.id, timer);
   });
 
   bb.events.on("thread.active", ({ thread }) => {
     cancelIdleTimer(thread.id);
+    bumpEpoch(thread.id);
     // Native queued messages deliver at turn boundaries — nudge any open
-    // popover/panel to refetch its "In bb's queue" section.
-    notify(thread.id);
+    // popover/panel to refetch its "In bb's queue" section, but only for a
+    // thread this plugin actually holds something for.
+    if (store.countQueued(thread.id) > 0)
+      notify({
+        topic: "queue",
+        kind: "changed",
+        threadId: thread.id,
+        projectId: thread.projectId ?? null,
+      });
   });
 
-  bb.events.on("thread.deleted", ({ thread }) => {
+  // A failed thread never goes idle, so an armed queue would wait forever
+  // behind a banner promising it will send "when the agent finishes". Hold it
+  // explicitly instead: pausing is visible, reversible, and says what happened.
+  bb.events.on("thread.failed", ({ thread, error }) => {
     cancelIdleTimer(thread.id);
-    const result = db
-      .prepare(`DELETE FROM prompts WHERE thread_id = ?`)
-      .run(thread.id);
-    void bb.storage.kv.delete(pausedKey(thread.id));
-    if (result.changes > 0) notify(thread.id);
+    bumpEpoch(thread.id);
+    if (!store.nextArmed(thread.id)) return;
+    if (store.isPaused(thread.id)) return;
+    store.setPaused(thread.id, true);
+    bb.log.warn(
+      `thread ${thread.id} failed — auto-send paused with prompts still queued` +
+        (error ? `: ${error}` : ""),
+    );
+    notify({
+      topic: "queue",
+      kind: "send-failed",
+      threadId: thread.id,
+      projectId: thread.projectId ?? null,
+      message: "Thread failed — auto-send paused, prompts kept.",
+    });
   });
+
+  function endThread(thread: { id: string; projectId?: string; title?: string | null; titleFallback?: string | null }): void {
+    cancelIdleTimer(thread.id);
+    bumpEpoch(thread.id);
+    void operations
+      .endThread(thread.id, {
+        projectId: thread.projectId ?? null,
+        title: thread.title ?? thread.titleFallback ?? null,
+      })
+      .catch((error) => bb.log.error(`thread cleanup failed: ${errorText(error)}`));
+  }
+
+  bb.events.on("thread.archived", ({ thread }) => endThread(thread));
+  bb.events.on("thread.deleted", ({ thread }) => endThread(thread));
 
   bb.onDispose(() => {
+    // A mine in flight outlives this context by seconds; the flag stops it
+    // from logging or publishing through an API that is already gone.
+    disposed = true;
     for (const timer of idleTimers.values()) clearTimeout(timer);
     idleTimers.clear();
+    threadEpoch.clear();
   });
 
   // ---- Scheduled sends: fire due prompts regardless of idle state ----
   bb.background.schedule("scheduled-send", "* * * * *", async () => {
     for (const prompt of store.listDue(Date.now())) {
       if (prompt.threadId === null) continue;
-      await sendPrompt(prompt, prompt.threadId, "scheduled");
+      await operations.sendPrompt(prompt, prompt.threadId, "scheduled");
     }
   });
 
-  // ---- Agent awareness: tell the agent its thread has queued follow-ups ----
-  bb.agents.contributeInstructions(({ threadId }) => {
+  // ---- Agent awareness ----
+  bb.agents.contributeInstructions(({ threadId, projectId }) => {
     if (!threadId) return null;
-    const row = db
-      .prepare(
-        `SELECT COUNT(*) AS n FROM prompts WHERE thread_id = ? AND status = 'queued'`,
-      )
-      .get(threadId) as { n: number };
-    if (row.n === 0) return null;
-    return (
-      `The user has ${row.n} follow-up prompt${row.n === 1 ? "" : "s"} queued for this thread ` +
-      `(Prompts plugin); they will be injected or auto-sent after the current work. ` +
-      `Prefer finishing the current task cleanly over starting new open-ended work.`
-    );
+    const queued = store.countQueued(threadId);
+    const project =
+      projectId === null || projectId === undefined
+        ? 0
+        : store.listQueued({ scope: "project", projectId }).length;
+    if (queued === 0 && project === 0) return null;
+    const parts: string[] = [];
+    if (queued > 0)
+      parts.push(
+        `The user has ${queued} follow-up prompt${queued === 1 ? "" : "s"} queued for this thread ` +
+          `(Prompts plugin); they will be injected or auto-sent after the current work. ` +
+          `Prefer finishing the current task cleanly over starting new open-ended work.`,
+      );
+    if (project > 0)
+      parts.push(
+        `${project} more ${project === 1 ? "prompt is" : "prompts are"} queued for this project — ` +
+          `use prompts_list to read them before proposing what to do next.`,
+      );
+    return parts.join(" ");
+  });
+
+  registerAgentTools(bb, { store, operations, notify });
+
+  // ---- @snippet mentions: reference a saved prompt, resolved at send time ----
+  bb.ui.registerMentionProvider({
+    id: "snippet",
+    label: "Snippets",
+    triggers: ["@", "~"],
+    search({ query, projectId }) {
+      return store
+        .listSnippets(query, { projectId: projectId ?? null, limit: 8 })
+        .snippets.map((snippet) => ({
+          id: snippet.id,
+          title: snippet.title,
+          subtitle:
+            snippet.groupName ??
+            (snippet.keywords || undefined) ??
+            snippet.body.replace(/\s+/g, " ").slice(0, 60),
+        }));
+    },
+    resolve(itemId) {
+      const snippet = store.getSnippet(itemId);
+      if (!snippet) throw new Error("Snippet no longer exists");
+      store.touchSnippet(snippet.id);
+      const unfilled = parseTokens(snippet.body);
+      return {
+        context:
+          `# Snippet: ${snippet.title}\n\n${snippet.body}` +
+          (unfilled.length > 0
+            ? `\n\n(This snippet has unfilled placeholders: ` +
+              `${unfilled.map((token) => `{{${token.name}}}`).join(" ")}. Ask the user for them ` +
+              `if they matter.)`
+            : ""),
+      };
+    },
   });
 
   // ---- CLI: bb prompts ----
   bb.cli.register({
     name: "prompts",
-    summary: "Prompt queue + snippets: stash prompts, auto-send on idle, reusable templates",
-    commands: [
-      { name: "list", summary: "List queued prompts (thread + global)", usage: "bb prompts list" },
-      {
-        name: "add",
-        summary: "Queue a prompt (-g global, --arm auto-send, --at +5m/+2h/ISO schedule)",
-        usage: "bb prompts add [-g] [--arm] [--at <when>] <text…>",
-      },
-      { name: "send", summary: "Send a queued prompt to the current thread now", usage: "bb prompts send <id>" },
-      {
-        name: "push",
-        summary: "Move a queued prompt into bb's native queue (auto-delivers next turn)",
-        usage: "bb prompts push <id>",
-      },
-      {
-        name: "stash",
-        summary: "Pull ALL of bb's queued messages for this thread into the stash (stops auto-delivery)",
-        usage: "bb prompts stash",
-      },
-      { name: "arm", summary: "Arm/disarm auto-send for a prompt", usage: "bb prompts arm|disarm <id>" },
-      { name: "run", summary: "Arm every queued prompt in this thread (drain in order)", usage: "bb prompts run" },
-      { name: "pause", summary: "Pause/resume auto-send for this thread", usage: "bb prompts pause|resume" },
-      { name: "rm", summary: "Delete a queued prompt", usage: "bb prompts rm <id>" },
-      { name: "snips", summary: "List/search snippets", usage: "bb prompts snips [query]" },
-      {
-        name: "snip-add",
-        summary: "Save a snippet (reusable prompt; {{tokens}} become fill-ins)",
-        usage: "bb prompts snip-add --title <t> [--keywords <k>] [--group <g>] <body…>",
-      },
-      { name: "snip-show", summary: "Print a snippet's body", usage: "bb prompts snip-show <id>" },
-      { name: "snip-rm", summary: "Delete a snippet", usage: "bb prompts snip-rm <id>" },
-    ],
-    async run(argv, ctx) {
-      const [command, ...rest] = argv;
-      const threadId = ctx.threadId ?? null;
-      const fail = (message: string) => ({ exitCode: 1, stderr: message });
-      const formatPrompt = (prompt: Prompt) => {
-        const flags = [
-          prompt.autoSend ? "armed" : null,
-          prompt.sendAt !== null
-            ? `at ${new Date(prompt.sendAt).toISOString()}`
-            : null,
-          prompt.lastError !== null ? "FAILED" : null,
-        ]
-          .filter(Boolean)
-          .join(", ");
-        return `${prompt.id}  ${flags ? `[${flags}] ` : ""}${prompt.text.replace(/\s+/g, " ").slice(0, 100)}`;
-      };
-
-      switch (command) {
-        case "list":
-        case undefined: {
-          const lines: string[] = [];
-          if (threadId) {
-            const threadPrompts = store.listQueued("thread", threadId);
-            lines.push(
-              `Thread queue (${threadPrompts.length}${(await isPaused(threadId)) ? ", paused" : ""}):`,
-              ...threadPrompts.map(formatPrompt),
-            );
-          }
-          const globalPrompts = store.listQueued("global", null);
-          lines.push(
-            `Global queue (${globalPrompts.length}):`,
-            ...globalPrompts.map(formatPrompt),
-          );
-          return { exitCode: 0, stdout: lines.join("\n") };
-        }
-        case "add": {
-          const args = [...rest];
-          let global = false;
-          let arm = false;
-          let at: string | null = null;
-          const words: string[] = [];
-          while (args.length > 0) {
-            const arg = args.shift()!;
-            if (arg === "-g" || arg === "--global") global = true;
-            else if (arg === "--arm") arm = true;
-            else if (arg === "--at") at = args.shift() ?? null;
-            else words.push(arg);
-          }
-          const text = words.join(" ").trim();
-          if (!text) return fail("Usage: bb prompts add [-g] [--arm] [--at <when>] <text…>");
-          if (!global && threadId === null)
-            return fail("Not in a thread — use -g to queue globally.");
-          let sendAt: number | null = null;
-          if (at !== null) {
-            if (global) return fail("--at needs a thread-scoped prompt (drop -g).");
-            sendAt = parseWhen(at, Date.now());
-            if (sendAt === null)
-              return fail(`Can't parse --at "${at}" (use +30s/+5m/+2h/+1d or ISO-8601).`);
-          }
-          const prompt = store.addPrompt({
-            text,
-            scope: global ? "global" : "thread",
-            threadId,
-            autoSend: arm,
-            sendAt,
-          });
-          notify(prompt.threadId);
-          return {
-            exitCode: 0,
-            stdout: `Queued ${prompt.id}${prompt.autoSend ? " (armed)" : ""}${
-              sendAt !== null ? ` (sends ${new Date(sendAt).toISOString()})` : ""
-            }.`,
-          };
-        }
-        case "send": {
-          const id = rest[0];
-          if (!id) return fail("Usage: bb prompts send <id>");
-          if (threadId === null) return fail("Not in a thread.");
-          const prompt = store.getPrompt(id);
-          if (!prompt || prompt.status !== "queued")
-            return fail(`No queued prompt with id ${id}.`);
-          const result = await sendPrompt(prompt, threadId, "cli");
-          return result.sent
-            ? { exitCode: 0, stdout: `Sent ${id}.` }
-            : fail(`Send failed: ${result.error}`);
-        }
-        case "push": {
-          const id = rest[0];
-          if (!id) return fail("Usage: bb prompts push <id>");
-          if (threadId === null) return fail("Not in a thread.");
-          const claimed = store.claimPrompt(id, "bb-queue");
-          if (!claimed) return fail(`No queued prompt with id ${id}.`);
-          try {
-            await bb.sdk.threads.queuedMessages.create({
-              threadId,
-              input: [{ type: "text", text: claimed.text, mentions: [] }],
-            });
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            store.requeuePrompt(claimed.id, message);
-            notify(threadId);
-            return fail(`Push failed: ${message}`);
-          }
-          notify(threadId);
-          return { exitCode: 0, stdout: `Pushed ${id} to bb's queue.` };
-        }
-        case "stash": {
-          if (threadId === null) return fail("Not in a thread.");
-          const messages = await bb.sdk.threads.queuedMessages.list({ threadId });
-          let stashed = 0;
-          for (const message of messages) {
-            const text = message.content
-              .filter(
-                (part): part is Extract<typeof part, { type: "text" }> =>
-                  part.type === "text",
-              )
-              .map((part) => part.text)
-              .join("\n")
-              .trim();
-            if (!text) continue;
-            const prompt = store.addPrompt({
-              text,
-              scope: "thread",
-              threadId,
-              autoSend: false,
-            });
-            try {
-              await bb.sdk.threads.queuedMessages.delete({
-                threadId,
-                queuedMessageId: message.id,
-              });
-              stashed += 1;
-            } catch {
-              db.prepare(`DELETE FROM prompts WHERE id = ?`).run(prompt.id);
-            }
-          }
-          notify(threadId);
-          return {
-            exitCode: 0,
-            stdout: `Stashed ${stashed} message(s) — they will not auto-send.`,
-          };
-        }
-        case "arm":
-        case "disarm": {
-          const id = rest[0];
-          if (!id) return fail(`Usage: bb prompts ${command} <id>`);
-          const prompt = store.getPrompt(id);
-          if (!prompt || prompt.status !== "queued")
-            return fail(`No queued prompt with id ${id}.`);
-          if (command === "arm" && prompt.threadId === null)
-            return fail("Only thread-scoped prompts can be armed.");
-          db.prepare(
-            `UPDATE prompts SET auto_send = ?, updated_at = ? WHERE id = ?`,
-          ).run(command === "arm" ? 1 : 0, Date.now(), id);
-          notify(prompt.threadId);
-          return {
-            exitCode: 0,
-            stdout: `${command === "arm" ? "Armed" : "Disarmed"} ${id}.`,
-          };
-        }
-        case "run": {
-          if (threadId === null) return fail("Not in a thread.");
-          const result = db
-            .prepare(
-              `UPDATE prompts SET auto_send = 1, updated_at = ?
-               WHERE thread_id = ? AND status = 'queued' AND auto_send = 0`,
-            )
-            .run(Date.now(), threadId);
-          notify(threadId);
-          return {
-            exitCode: 0,
-            stdout: `Armed ${result.changes} prompt(s) — they drain in order as the thread goes idle.`,
-          };
-        }
-        case "pause":
-        case "resume": {
-          if (threadId === null) return fail("Not in a thread.");
-          if (command === "pause")
-            await bb.storage.kv.set(pausedKey(threadId), true);
-          else await bb.storage.kv.delete(pausedKey(threadId));
-          notify(threadId);
-          return {
-            exitCode: 0,
-            stdout: command === "pause" ? "Auto-send paused." : "Auto-send resumed.",
-          };
-        }
-        case "rm": {
-          const id = rest[0];
-          if (!id) return fail("Usage: bb prompts rm <id>");
-          const prompt = store.getPrompt(id);
-          if (!prompt) return fail(`No prompt with id ${id}.`);
-          db.prepare(`DELETE FROM prompts WHERE id = ?`).run(id);
-          notify(prompt.threadId);
-          return { exitCode: 0, stdout: `Deleted ${id}.` };
-        }
-        case "snips": {
-          const snippets = store.listSnippets(rest.join(" "));
-          const lines = snippets.map(
-            (snippet) =>
-              `${snippet.id}  ${snippet.title}${snippet.groupName ? ` (${snippet.groupName})` : ""}${
-                snippet.keywords ? `  [${snippet.keywords}]` : ""
-              }`,
-          );
-          return {
-            exitCode: 0,
-            stdout: lines.length > 0 ? lines.join("\n") : "No snippets.",
-          };
-        }
-        case "snip-add": {
-          const args = [...rest];
-          let title: string | null = null;
-          let keywords = "";
-          let group: string | null = null;
-          const words: string[] = [];
-          while (args.length > 0) {
-            const arg = args.shift()!;
-            if (arg === "--title") title = args.shift() ?? null;
-            else if (arg === "--keywords") keywords = args.shift() ?? "";
-            else if (arg === "--group") group = args.shift() ?? null;
-            else words.push(arg);
-          }
-          const body = words.join(" ").trim();
-          if (!title || !body)
-            return fail(
-              "Usage: bb prompts snip-add --title <t> [--keywords <k>] [--group <g>] <body…>",
-            );
-          const snippet = store.addSnippet({ title, body, keywords, groupName: group });
-          notify(null);
-          return { exitCode: 0, stdout: `Saved snippet ${snippet.id}.` };
-        }
-        case "snip-show": {
-          const snippet = rest[0] ? store.getSnippet(rest[0]) : null;
-          if (!snippet) return fail("Usage: bb prompts snip-show <id>");
-          return { exitCode: 0, stdout: snippet.body };
-        }
-        case "snip-rm": {
-          const id = rest[0];
-          if (!id) return fail("Usage: bb prompts snip-rm <id>");
-          if (!store.deleteSnippet(id)) return fail(`No snippet with id ${id}.`);
-          notify(null);
-          return { exitCode: 0, stdout: `Deleted ${id}.` };
-        }
-        default:
-          return fail(
-            `Unknown command "${command}". Commands: list, add, send, arm, disarm, run, pause, resume, rm, snips, snip-add, snip-show, snip-rm.`,
-          );
-      }
-    },
+    summary:
+      "Prompt queue + snippets: stash prompts, auto-send on idle, reusable templates",
+    commands: [...CLI_COMMANDS],
+    run: createCliRunner({ store, operations, miner, notify }),
   });
 }
