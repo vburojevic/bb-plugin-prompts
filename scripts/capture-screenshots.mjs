@@ -24,9 +24,20 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outDir = resolve(repoRoot, "assets/screenshots");
 
+// Ids are per-instance, so there is no useful default: a stale one would just
+// render a 404 into the README. Name the demo thread explicitly.
 const APP = process.env.BB_APP_URL ?? "http://localhost:16581";
-const PROJECT = process.env.BB_DEMO_PROJECT ?? "proj_g7ag4w4nhy";
-const THREAD = process.env.BB_DEMO_THREAD ?? "thr_ywn2kzenpc";
+const PROJECT = process.env.BB_DEMO_PROJECT;
+const THREAD = process.env.BB_DEMO_THREAD;
+
+if (!PROJECT || !THREAD) {
+  console.error(
+    "Set BB_DEMO_PROJECT and BB_DEMO_THREAD to the seeded demo thread, e.g.\n" +
+      "  BB_DEMO_PROJECT=proj_… BB_DEMO_THREAD=thr_… npm run screenshots",
+  );
+  process.exit(1);
+}
+
 const threadUrl = `${APP}/projects/${PROJECT}/threads/${THREAD}`;
 
 // Wide enough that nothing reflows into its narrow layout, narrow enough that
