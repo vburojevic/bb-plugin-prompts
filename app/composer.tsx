@@ -26,6 +26,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { COARSE_POINTER_ICON_SIZE_SHRINK_CLASS } from "@/components/ui/coarse-pointer-sizing";
 import { cn } from "@/lib/utils";
 
 /**
@@ -93,9 +94,17 @@ export const ComposerPill = forwardRef<
       type="button"
       // Self-contained pill: the count lives INSIDE the 28px-tall bounds, so
       // the composer row's clamping can never clip it.
+      //
+      // 28px is a mouse target. On a touch composer it is the smallest control
+      // in the row — bb's own prompt-actions button is 40px tall there — and an
+      // icon-only pill would be a 28x28 tap target, under both the iOS (44pt)
+      // and Android (48dp) minimums. Grow to 40px on a coarse pointer, matching
+      // the host's own controls; the fine-pointer size is untouched.
       className={cn(
-        "flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
-        count > 0 ? "pl-1.5 pr-1" : "w-7",
+        "flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 max-md:pointer-coarse:h-10",
+        count > 0
+          ? "pl-1.5 pr-1 max-md:pointer-coarse:pl-2.5 max-md:pointer-coarse:pr-2"
+          : "w-7 max-md:pointer-coarse:w-10",
         styles.pill,
         dashed && "border-dashed",
         tone === "muted" || tone === "neutral" ? "hover:bg-state-hover" : null,
@@ -108,7 +117,10 @@ export const ComposerPill = forwardRef<
     >
       <Icon
         name={icon}
-        className={cn("size-4 shrink-0", pulse && "animate-pulse")}
+        className={cn(
+          COARSE_POINTER_ICON_SIZE_SHRINK_CLASS,
+          pulse && "animate-pulse",
+        )}
         aria-hidden
       />
       {count > 0 ? (

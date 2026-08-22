@@ -1,13 +1,14 @@
 {
   "name": "bb-plugin-prompts",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "build": "bb plugin build",
-    "screenshots": "node scripts/capture-screenshots.mjs"
+    "screenshots": "node scripts/capture-screenshots.mjs",
+    "mobile-test": "node scripts/mobile-test.mjs"
   },
   "engines": {
     "bb": ">=0.36",
