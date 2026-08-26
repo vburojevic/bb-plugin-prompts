@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-prompts",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "scripts": {
     "test": "vitest run",
@@ -11,8 +11,8 @@
     "mobile-test": "node scripts/mobile-test.mjs"
   },
   "engines": {
-    "bb": ">=0.36",
-    "bbPluginSdk": "^0.4.1"
+    "bb": ">=0.40",
+    "bbPluginSdk": ">=0.4.16"
   },
   "bb": {
     "name": "Prompts",

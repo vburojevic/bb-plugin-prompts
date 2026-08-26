@@ -44,9 +44,11 @@ export function registerAgentTools(
       "Thread scope is the default and stays with this thread; project scope survives " +
       "the thread ending; global scope is reachable from anywhere.",
     instructions: QUEUE_INSTRUCTIONS,
-    experimental_statusLabels: {
-      pending: "Queueing a follow-up prompt",
-      completed: "Queued a follow-up prompt",
+    presentation: {
+      label: {
+        pending: "Queueing a follow-up prompt",
+        completed: "Queued a follow-up prompt",
+      },
     },
     parameters: z.object({
       text: z.string().min(1).describe("The prompt to queue, written as the user would send it"),
