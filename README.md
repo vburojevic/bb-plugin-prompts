@@ -246,3 +246,10 @@ them, light and dark.
 ## License
 
 [MIT](LICENSE) © Vedran Burojević
+
+---
+
+## More bb plugins
+
+This is one of eight bb plugins I publish — see them all at
+[**vburojevic/bb-plugins**](https://github.com/vburojevic/bb-plugins).
