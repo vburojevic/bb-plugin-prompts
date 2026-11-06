@@ -30,35 +30,38 @@ import { COARSE_POINTER_ICON_SIZE_SHRINK_CLASS } from "@/components/ui/coarse-po
 import { cn } from "@/lib/utils";
 
 /**
- * The composer trigger both buttons use. One shape, one size, one hover — two
- * buttons sitting side by side in the composer row have to read as a pair, not
- * as two plugins that happened to land next to each other.
- */
-/**
  * Surface per tone. `muted` is the resting state and stays as quiet as any
  * other composer control; the rest tint the whole pill so the queue's state is
  * readable from across the row, without the pill ever leaving its 28px box.
  */
 const PILL_TONE: Record<PillTone, { pill: string; chip: string }> = {
   muted: {
-    pill: "border-input text-muted-foreground hover:text-foreground",
+    pill: "text-muted-foreground hover:text-foreground",
     chip: "bg-muted text-muted-foreground",
   },
   neutral: {
-    pill: "border-input text-foreground",
+    pill: "text-foreground",
     chip: "bg-muted text-foreground",
   },
   accent: {
-    pill: "border-primary/35 bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary",
+    pill: "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary",
     chip: "bg-primary/20 text-primary",
   },
   danger: {
     pill:
-      "border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive",
+      "bg-destructive/10 text-destructive hover:bg-destructive/15 hover:text-destructive",
     chip: "bg-destructive/20 text-destructive",
   },
 };
 
+/**
+ * The composer trigger both buttons use. One shape, one size, one hover — two
+ * buttons sitting side by side in the composer row have to read as a pair, not
+ * as two plugins that happened to land next to each other.
+ *
+ * No outline: bb's own composer controls and the other plugins' actions are
+ * ghost buttons, so a bordered pill was the one boxed control in the row.
+ */
 export const ComposerPill = forwardRef<
   HTMLButtonElement,
   {
@@ -70,8 +73,6 @@ export const ComposerPill = forwardRef<
     tone?: PillTone;
     /** Slow pulse on the glyph: something is going to fire on its own. */
     pulse?: boolean;
-    /** Held state: same colours, but the outline reads as "not running". */
-    dashed?: boolean;
   } & ComponentPropsWithoutRef<"button">
 >(function ComposerPill(
   {
@@ -81,7 +82,6 @@ export const ComposerPill = forwardRef<
     count = 0,
     tone = "muted",
     pulse = false,
-    dashed = false,
     className,
     ...props
   },
@@ -101,12 +101,11 @@ export const ComposerPill = forwardRef<
       // and Android (48dp) minimums. Grow to 40px on a coarse pointer, matching
       // the host's own controls; the fine-pointer size is untouched.
       className={cn(
-        "flex h-7 shrink-0 items-center justify-center gap-1 rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 max-md:pointer-coarse:h-10",
+        "flex h-7 shrink-0 items-center justify-center gap-1 rounded-md transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 max-md:pointer-coarse:h-10",
         count > 0
           ? "pl-1.5 pr-1 max-md:pointer-coarse:pl-2.5 max-md:pointer-coarse:pr-2"
           : "w-7 max-md:pointer-coarse:w-10",
         styles.pill,
-        dashed && "border-dashed",
         tone === "muted" || tone === "neutral" ? "hover:bg-state-hover" : null,
         open && "bg-state-hover",
         className,
@@ -202,7 +201,6 @@ export function QueueButton() {
           open={open}
           tone={state.tone}
           pulse={state.pulse}
-          dashed={state.kind === "paused"}
         />
       </PopoverTrigger>
       <PopoverContent
