@@ -120,11 +120,11 @@ States are strictly ordered — the most urgent one wins:
 
 | State         | Looks like                        | Means                                                |
 | ------------- | --------------------------------- | ---------------------------------------------------- |
-| **idle**      | plain outline, no count           | nothing queued here                                  |
+| **idle**      | muted glyph, no count             | nothing queued here                                  |
 | **queued**    | solid count chip                  | prompts waiting; nothing sends on its own            |
 | **scheduled** | accent tint, calendar glyph       | a send is booked for a time                          |
 | **armed**     | accent tint, clock glyph (pulses) | sends when the agent finishes; pulses while it works |
-| **paused**    | dashed outline, pause glyph       | armed prompts deliberately held                      |
+| **paused**    | pause glyph                       | armed prompts deliberately held                      |
 | **failed**    | red tint, alert glyph             | a send failed; the prompt is still queued            |
 
 Hovering names the specifics — "1 prompt will send when the agent finishes · 2
