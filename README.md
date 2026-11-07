@@ -41,8 +41,9 @@ bb plugin install git:https://github.com/vburojevic/bb-plugin-prompts.git
 ```
 
 > [!IMPORTANT]
-> Requires bb 0.49 or later. On an older bb, installing from git picks v0.2.4,
-> the last release that supports it.
+> Requires bb 0.49 or later. On bb 0.40 to 0.48, install v0.2.4, the last
+> release for those versions:
+> `bb plugin install git:https://github.com/vburojevic/bb-plugin-prompts.git@v0.2.4`
 
 > [!NOTE]
 > Nothing leaves your machine: one SQLite file under the plugin's own data
@@ -121,7 +122,7 @@ or injected, still there and ready to restore.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/panel-dark.png">
-  <img src="assets/screenshots/panel.png" width="100%" alt="The Prompts tab in a thread's side panel: the thread, project and global queues, snippets and recently used prompts beside the conversation.">
+  <img src="assets/screenshots/panel.png" width="100%" alt="The Prompts tab in a thread's side panel: the thread, project and global queues, snippets and recently used prompts.">
 </picture>
 
 ### Beside the thread
@@ -228,7 +229,7 @@ and that same sentence is the button's accessible name.
 | <kbd>@</kbd> or <kbd>~</kbd>              | the composer                                   | mention a snippet            |
 | <kbd>⌘</kbd>/<kbd>Ctrl</kbd> <kbd>Enter</kbd> | the write box in the popover, panel or manager | queue the prompt             |
 | <kbd>⌘</kbd>/<kbd>Ctrl</kbd> <kbd>Enter</kbd> | **Edit prompt**                                | save the edit                |
-| <kbd>Enter</kbd>                          | the fill-in dialog                             | insert the filled prompt     |
+| <kbd>Enter</kbd>                          | the fill-in dialog                             | finish with the filled prompt (insert or queue it) |
 
 </details>
 
@@ -339,6 +340,12 @@ pin to the installed bb's SDK.
 SQLite, so `better-sqlite3`'s native binding has to match the Node running
 them. Switching Node versions (a `mise` shell vs a Homebrew one) breaks it;
 `npm rebuild better-sqlite3` under the Node you test with fixes it.
+
+**`bb prompts add` says "unknown command".** bb's built-in Prompt Library
+plugin (`bb--prompt-library`, off by default) also uses the `bb prompts`
+command, and when it is enabled it wins. Run this plugin's commands with the
+explicit form, `bb plugin run prompts <command> …`, or turn the library off in
+Settings → Plugins. The agent tools are not affected.
 
 </details>
 
