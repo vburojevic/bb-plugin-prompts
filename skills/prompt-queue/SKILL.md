@@ -70,6 +70,12 @@ bb prompts suggest [--refresh] [--json]  # snippets worth saving, mined from ret
 
 `--` ends option parsing: `bb prompts add -- -g is part of the text`.
 
+bb's built-in Prompt Library plugin (`bb--prompt-library`, off by default) also
+registers `bb prompts`. When it is enabled, `bb prompts` runs its commands
+(`search`, `list`, `star`, `title`, `unstar`) instead of these. Reach this
+plugin with the explicit form, `bb plugin run prompts <command> …`, for example
+`bb plugin run prompts add <text>`. The `prompts_*` tools are not affected.
+
 ## Notes
 
 - If your session instructions mention queued follow-up prompts for this
