@@ -15,7 +15,7 @@
 //
 // A thread ending is not the end of its prompts: they move to the project's
 // queue, so the next session in that project still has the user's writing.
-import type { BbPluginApi } from "@bb/plugin-sdk";
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { rpcContract } from "./lib/contract";
 import { registerAgentTools } from "./lib/agent-tools";
 import { CLI_COMMANDS, createCliRunner } from "./lib/cli";

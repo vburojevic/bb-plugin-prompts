@@ -1,6 +1,6 @@
 // The Prompts manager: every queue in one place, and the snippet library.
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { useBbNavigate, useRpc } from "@bb/plugin-sdk/app";
+import { useBbNavigate, useRpc } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { hasTokens } from "../lib/template";
 import type { rpcContract } from "../lib/contract";

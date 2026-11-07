@@ -32,6 +32,7 @@ import {
   formatRelative,
   formatWhen,
   previewText,
+  useNativeQueueChanges,
   useQueue,
   useSnippets,
   usePromptSignal,
@@ -151,13 +152,9 @@ export function QueueView({
     if (activeTab === "thread") refreshNative();
   }, [activeTab, refreshNative]);
   usePromptSignal(["native"], { threadId, projectId }, refreshNative);
-  // Backstop poll: native-queue writes from the composer emit no plugin
-  // signal, so refetch periodically while the thread tab is showing.
-  useEffect(() => {
-    if (activeTab !== "thread" || threadId === null) return;
-    const timer = setInterval(refreshNative, 5_000);
-    return () => clearInterval(timer);
-  }, [activeTab, threadId, refreshNative]);
+  // Writes this plugin did not make (the composer queueing a message, an edit
+  // in bb's queue card, a delivery) arrive as bb's own queue change events.
+  useNativeQueueChanges(threadId, refreshNative, activeTab === "thread");
 
   const filter = useCallback(
     (prompts: PromptDto[]) => {

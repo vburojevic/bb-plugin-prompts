@@ -8,7 +8,7 @@ import {
   useState,
   type ComponentPropsWithoutRef,
 } from "react";
-import { useBbNavigate, useComposer, useComposerView } from "@bb/plugin-sdk/app";
+import { useBbNavigate, useComposer } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { describeQueue, type PillTone } from "./queue-state";
 import { QueueView } from "./queue-view";
@@ -144,9 +144,9 @@ function useInsertText(close: () => void) {
   return useCallback(
     (text: string): boolean => {
       try {
-        composer.updateText((current) =>
-          current.trim() ? `${current.trimEnd()}\n\n${text}` : text,
-        );
+        // At the end, on its own paragraph: what the old text append did,
+        // without touching any mention already in the draft.
+        composer.insert(text, { at: "end", block: true });
         composer.focus();
       } catch {
         return false;
@@ -160,7 +160,7 @@ function useInsertText(close: () => void) {
 
 export function QueueButton() {
   const navigate = useBbNavigate();
-  const view = useComposerView();
+  const composer = useComposer();
   const threadId = useComposerThreadId();
   const projectId = useComposerProjectId();
   const [open, setOpen] = useState(false);
@@ -189,7 +189,7 @@ export function QueueButton() {
   );
 
   // Everything the pill needs to say, in one ordered description.
-  const state = describeQueue(data, { isRunning: view.run.isRunning });
+  const state = describeQueue(data, { isRunning: composer.isRunning });
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -278,7 +278,7 @@ export function SnippetsButton() {
 }
 
 export function ArmedBanner() {
-  const view = useComposerView();
+  const composer = useComposer();
   const threadId = useComposerThreadId();
   const projectId = useComposerProjectId();
   const { data, refresh, rpc } = useQueue({ threadId, projectId }, threadId !== null);
@@ -291,7 +291,7 @@ export function ArmedBanner() {
   // exactly the state a failed thread leaves behind, and it is the only
   // on-screen explanation for why nothing is sending.
   if (threadId === null || armed.length === 0) return null;
-  if (!view.run.isRunning && !data.paused) return null;
+  if (!composer.isRunning && !data.paused) return null;
 
   return (
     <div className="mb-1.5 flex items-center gap-2 rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-xs text-muted-foreground">

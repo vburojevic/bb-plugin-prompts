@@ -5,11 +5,11 @@
 //   pill, each opening a focused popover.
 // - Composer plus-menu: "Queue current draft" and "Save draft as snippet".
 // - Composer banner: armed/paused state while relevant.
-// - Thread panel action: the same view in a side panel tab.
+// - Thread tab (an action in the side panel): the same view.
 // - Nav panel: the manager, with every queue and the snippet library.
 //
 // Queue prompts consume on inject (undo restores); snippets never consume.
-import { definePluginApp, useBbContext } from "@bb/plugin-sdk/app";
+import { definePluginApp, useBbContext } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { ArmedBanner, QueueButton, SnippetsButton } from "./app/composer";
 import { ManagerPanel } from "./app/manager";
@@ -48,14 +48,14 @@ export default definePluginApp((app) => {
         label: "Queue current draft",
         description: "Save the draft for later and clear the composer",
         icon: "Layers",
-        run: ({ composer, view }) => {
+        run: ({ composer }) => {
           const text = composer.text.trim();
           if (!text) {
             toast("Nothing to queue — the draft is empty");
             return;
           }
-          const threadId = composerThreadIdFromScope(view.scope);
-          const projectId = composerProjectIdFromScope(view.scope);
+          const threadId = composerThreadIdFromScope(composer.scope);
+          const projectId = composerProjectIdFromScope(composer.scope);
           const scope =
             threadId !== null ? "thread" : projectId !== null ? "project" : "global";
           void callRpcDirect("addPrompt", {
@@ -66,7 +66,7 @@ export default definePluginApp((app) => {
             autoSend: false,
           })
             .then(() => {
-              composer.clear();
+              composer.replace({ text: "", mentions: [] });
               toast.success(
                 scope === "thread"
                   ? "Draft queued for this thread"
@@ -110,7 +110,9 @@ export default definePluginApp((app) => {
     ],
   });
 
-  app.slots.threadPanelAction({
+  app.slots.experimental_tab({
+    context: { kind: "thread" },
+    availability: "action",
     id: "queue",
     title: "Prompts",
     icon: "Layers",
