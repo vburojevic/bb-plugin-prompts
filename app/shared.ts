@@ -4,7 +4,6 @@ import {
   useBbContext,
   useComposer,
   useRealtime,
-  useRealtimeConnectionState,
   useRpc,
   useSdk,
 } from "@get-bb/plugin-sdk/app";
@@ -61,13 +60,9 @@ export function useComposerThreadId(): string | null {
 export function composerThreadIdFromScope(scope: {
   kind: string;
   threadId?: string;
-  childThreadId?: string | null;
-  parentThreadId?: string;
 }): string | null {
   if (scope.kind === "thread" || scope.kind === "queued-message")
     return scope.threadId ?? null;
-  if (scope.kind === "side-chat")
-    return scope.childThreadId ?? scope.parentThreadId ?? null;
   return null;
 }
 
@@ -80,7 +75,7 @@ export function composerProjectIdFromScope(scope: {
 
 /**
  * The project a composer surface belongs to. The composer scope knows it for
- * new-thread and side-chat composers; inside a thread the route does.
+ * the new-thread composer; inside a thread the route does.
  */
 export function useComposerProjectId(): string | null {
   const composer = useComposer();
@@ -180,15 +175,17 @@ export function useNativeQueueChanges(
     };
   }, [sdk, threadId, enabled]);
 
-  const connection = useRealtimeConnectionState();
-  const lastConnection = useRef(connection);
+  // The reconnect that matters is the one of the socket carrying these
+  // events, not the app's own: refetch when it is back.
   useEffect(() => {
-    const previous = lastConnection.current;
-    lastConnection.current = connection;
     if (!enabled || threadId === null) return;
-    if (connection === "connected" && previous === "reconnecting")
-      onChangeRef.current();
-  }, [connection, threadId, enabled]);
+    return sdk.subscribe({
+      event: "realtime:connection",
+      callback: (event) => {
+        if (event.state === "connected" && event.reconnected) onChangeRef.current();
+      },
+    });
+  }, [sdk, threadId, enabled]);
 }
 
 // ---------------------------------------------------------------------------
