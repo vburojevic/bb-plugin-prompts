@@ -33,8 +33,11 @@ let them go when it is ready.
 ## Install
 
 ```sh
-bb plugin install prompts                                                  # from the BB Community marketplace
-bb plugin install git:https://github.com/vburojevic/bb-plugin-prompts.git   # straight from source
+# from the BB Community marketplace
+bb plugin install prompts
+
+# or straight from source
+bb plugin install git:https://github.com/vburojevic/bb-plugin-prompts.git
 ```
 
 > [!IMPORTANT]
