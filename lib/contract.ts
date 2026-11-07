@@ -1,6 +1,6 @@
 // The RPC contract, in its own module so the frontend can type against it
 // without pulling the backend's imports into its type graph.
-import { defineRpcContract } from "@bb/plugin-sdk";
+import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
 export const PROMPT_TEXT_CAP = 32_000;

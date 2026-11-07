@@ -33,7 +33,7 @@ bb plugin install prompts                                           # from the b
 bb plugin install git:https://github.com/vburojevic/bb-plugin-prompts.git   # straight from source
 ```
 
-Requires bb `>=0.36`. Nothing leaves your machine: one SQLite file under the
+Requires bb `>=0.49`. Nothing leaves your machine: one SQLite file under the
 plugin's own data directory, no network calls, no telemetry.
 
 ## The queue
@@ -233,8 +233,10 @@ scripts/            capture-screenshots.mjs — drives a real bb for the images 
 `npx shadcn add @bb/select`. React, the radix portal primitives, and `sonner`
 come from the bb app at runtime and are never bundled.
 
-`types/*.d.ts` is a snapshot of the bb plugin API. Refresh with `bb plugin types`
-(`--check` in CI).
+The bb plugin API types come from the
+[`@get-bb/plugin-sdk`](https://www.npmjs.com/package/@get-bb/plugin-sdk) dev
+dependency, pinned to the SDK the plugin targets. `bb plugin types` moves the
+pin to the installed bb's SDK.
 
 ### About the screenshots
 

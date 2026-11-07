@@ -2,10 +2,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   useBbContext,
-  useComposerView,
+  useComposer,
   useRealtime,
+  useRealtimeConnectionState,
   useRpc,
-} from "@bb/plugin-sdk/app";
+  useSdk,
+} from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../lib/contract";
 import {
   EMPTY_QUEUE,
@@ -52,8 +54,8 @@ export async function callRpcDirect(
 
 /** Thread the composer's messages land in, or null on the new-thread screen. */
 export function useComposerThreadId(): string | null {
-  const view = useComposerView();
-  return composerThreadIdFromScope(view.scope);
+  const composer = useComposer();
+  return composerThreadIdFromScope(composer.scope);
 }
 
 export function composerThreadIdFromScope(scope: {
@@ -81,9 +83,9 @@ export function composerProjectIdFromScope(scope: {
  * new-thread and side-chat composers; inside a thread the route does.
  */
 export function useComposerProjectId(): string | null {
-  const view = useComposerView();
+  const composer = useComposer();
   const context = useBbContext();
-  return composerProjectIdFromScope(view.scope) ?? context.projectId ?? null;
+  return composerProjectIdFromScope(composer.scope) ?? context.projectId ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +139,56 @@ export function usePromptSignal(
       if (latest) handlerRef.current(latest);
     }, debounceMs);
   });
+}
+
+/**
+ * Call `onChange` whenever bb's own message queue for `threadId` changes: a
+ * message queued from the composer, edited or deleted in bb's queue card, or
+ * delivered at a turn boundary. bb announces each of those as a
+ * `queue-changed` thread change, so nothing here polls. Realtime events are
+ * not replayed, so a reconnect counts as a change too.
+ */
+export function useNativeQueueChanges(
+  threadId: string | null,
+  onChange: () => void,
+  enabled = true,
+): void {
+  const sdk = useSdk();
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  useEffect(() => {
+    if (!enabled || threadId === null) return;
+    // A delivery is several writes in a row (dispatch, then the turn's own
+    // queue bookkeeping); one refetch covers the burst.
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = sdk.subscribe({
+      event: "thread:changed",
+      threadId,
+      callback: (event) => {
+        if (!event.changes.includes("queue-changed")) return;
+        if (timer !== null) return;
+        timer = setTimeout(() => {
+          timer = null;
+          onChangeRef.current();
+        }, 120);
+      },
+    });
+    return () => {
+      unsubscribe();
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [sdk, threadId, enabled]);
+
+  const connection = useRealtimeConnectionState();
+  const lastConnection = useRef(connection);
+  useEffect(() => {
+    const previous = lastConnection.current;
+    lastConnection.current = connection;
+    if (!enabled || threadId === null) return;
+    if (connection === "connected" && previous === "reconnecting")
+      onChangeRef.current();
+  }, [connection, threadId, enabled]);
 }
 
 // ---------------------------------------------------------------------------

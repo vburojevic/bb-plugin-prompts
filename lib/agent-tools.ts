@@ -5,7 +5,7 @@
 // move is to stash the follow-up without leaving the turn.
 
 import { z } from "zod";
-import type { BbPluginApi } from "@bb/plugin-sdk";
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { fillTokens, parseTokens } from "./template";
 import { parseWhen } from "./time";
 import type { Operations, Signal } from "./operations";
