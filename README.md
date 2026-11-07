@@ -127,15 +127,15 @@ Open **Prompts** from the thread's side panel (<kbd>⌘</kbd> <kbd>J</kbd>, then
 the new tab menu) to keep the same queue and snippets open next to the
 conversation while you work.
 
-</td>
-</tr>
-</table>
-
 ### Suggested snippets
 
 `bb prompts suggest` (and the Suggestions row in the panel) mines bb's prompt
 history, clusters the prompts you keep retyping, and offers them as snippets
 with the varying parts already turned into tokens.
+
+</td>
+</tr>
+</table>
 
 > [!TIP]
 > Tell an agent "later" and it stashes the follow-up with `prompts_queue`

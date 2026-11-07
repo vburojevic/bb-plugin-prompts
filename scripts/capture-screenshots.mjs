@@ -162,7 +162,8 @@ const SHOTS = [
       await page.getByRole("button", { name: "Prompts", exact: true }).first().click();
       await page.getByText("Recently used", { exact: false }).first().waitFor({ timeout: 10_000 });
       await page.waitForTimeout(1_200);
-      await shoot(page, "manager", mode);
+      // The manager's own column; the sidebar is in the hero already.
+      await shoot(page, "manager", mode, { x: 420, y: 0, width: 760, height: 1080 });
     },
   },
   {
@@ -177,7 +178,8 @@ const SHOTS = [
       await page.locator("button").filter({ hasText: /^Prompts$/ }).last().click();
       await page.getByText("Add a regression test").last().waitFor({ timeout: 10_000 });
       await page.waitForTimeout(1_000);
-      await shoot(page, "panel", mode);
+      // The side panel tab itself.
+      await shoot(page, "panel", mode, { x: 801, y: 0, width: 479, height: 470 });
     },
   },
 ];
