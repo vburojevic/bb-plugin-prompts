@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-prompts",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "test": "vitest run",
@@ -16,7 +16,7 @@
   },
   "bb": {
     "name": "Prompts",
-    "description": "Prompt queue + reusable snippets: stash prompts while agents work, inject or auto-send them when the agent goes idle, schedule sends, and keep a searchable snippet library with fill-in templates \u2014 including snippets it suggests from the prompts you keep retyping. Queues are scoped to a thread, a project, or everywhere, and a thread's leftovers move to its project instead of vanishing with the thread.",
+    "description": "Prompt queue + reusable snippets: stash prompts while agents work, inject or auto-send them when the agent goes idle, schedule sends, and keep a searchable snippet library with fill-in templates — including snippets it suggests from the prompts you keep retyping. Queues are scoped to a thread, a project, or everywhere, and a thread's leftovers move to its project instead of vanishing with the thread.",
     "branding": {
       "icon": "./assets/icon.svg"
     },
