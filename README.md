@@ -179,7 +179,7 @@ that thread's queue and says so rather than leaving prompts waiting forever.
 ```mermaid
 flowchart LR
   idle["Agent finishes<br>(thread.idle)"] --> wait["Wait autoSendDelaySeconds"]
-  wait -->|"thread goes active again"| keep["Cancelled: prompt stays queued"]
+  wait -->|"thread goes active again"| keep["Canceled: prompt stays queued"]
   wait -->|"still idle"| send["Send the next armed prompt"]
   failed["Thread fails"] --> pause["Queue paused, prompts kept"]
 ```
