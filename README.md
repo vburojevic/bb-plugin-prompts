@@ -29,6 +29,9 @@ let them go when it is ready.
 - **Snippets**: reusable, titled prompts with `{{fill-in}}` tokens. Inserting
   one never consumes it. The plugin also reads bb's own prompt history and
   offers to turn the things you keep retyping into snippets.
+- **Quick replies**: a row of one-tap prompts above a thread's composer that
+  fits the moment. Continue after a turn stops, your usual follow-ups after it
+  finishes, Status any time.
 
 ## Install
 
@@ -188,6 +191,47 @@ Claims are atomic: a duplicate idle event, the cron sweep, and the UI can race
 freely and a prompt still sends exactly once. A failed send re-queues the
 prompt with the error attached.
 
+## Quick replies
+
+Most of what you type into a thread is short and the same every time. Quick
+replies put those prompts one tap away, in a row above the composer that
+scrolls sideways on a phone and follows the thread's state:
+
+| The thread                       | The row leads with                                  |
+| -------------------------------- | --------------------------------------------------- |
+| Last turn failed (rate limit, provider error) | **Continue**, which retries the failed turn |
+| Last turn was interrupted        | **Continue**, sent as a message                     |
+| Last turn finished               | The short prompts you type most                     |
+| Agent is working                 | Only the any-time chips                             |
+| Agent asked you something        | Nothing: the answer form owns the composer          |
+
+The any-time chips (**Status** by default) close the row in every state.
+
+**A tap sends.** With a draft already in the composer the chip joins the draft
+instead, so a half-written prompt never goes out by accident. Set
+`quickReplyTap` to `fill` to always fill the composer and press send yourself.
+Nothing is ever sent without a tap.
+
+**Continue after a failure retries the turn** through bb's own retry: if the
+provider never received your last message it goes again as you wrote it,
+otherwise the agent picks up where it stopped. When a retry is already queued
+(by another plugin, or an earlier tap) the chip sends its text instead.
+
+**The follow-ups are learned on your machine.** The same history scan that
+suggests snippets counts the short prompts you type (40 characters or less,
+typed at least three times) and folds typos into the spelling you use most.
+Nothing leaves the machine and nothing is stored outside the plugin's own
+database. Fill `quickRepliesAfterDone` to pick your own instead; until the
+first scan finishes, or with `mineHistory` off, generic follow-ups stand in.
+
+Each list is one chip per line, `Label | text to send`, or just the text:
+
+```text
+Continue | continue
+Status | status
+Write the docs
+```
+
 ## bb's own queue
 
 bb has a native per-thread message queue that auto-delivers at the next turn
@@ -282,7 +326,12 @@ for the thread and the project.
 | ---------------------- | ---------------------- | ------------------------------------------ |
 | `autoSendDelaySeconds` | `20`                   | Grace period before an armed prompt sends  |
 | `threadEnd`            | `keep for the project` | Archived or deleted thread: promote or delete |
-| `mineHistory`          | `on`                   | Scan prompt history to suggest snippets    |
+| `mineHistory`          | `on`                   | Scan prompt history to suggest snippets and learn quick replies |
+| `quickReplies`         | `true`                 | Show the quick-reply row above thread composers |
+| `quickReplyTap`        | `send`                 | `send` sends on tap, `fill` fills the composer |
+| `quickRepliesAfterStop` | `Continue \| continue` | Chips after a failed or interrupted turn; the first retries a failure |
+| `quickRepliesAfterDone` | empty                 | Chips after a finished turn; empty means learned from history |
+| `quickRepliesAnyTime`  | `Status \| status`     | Chips shown in every state                 |
 
 ```sh
 bb plugin config prompts
@@ -313,11 +362,12 @@ lib/store.ts        SQLite: queue, snippets, thread state, fill-in values
 lib/operations.ts   send / stash / push / promote: one copy, three callers
 lib/suggest.ts      history mining: cluster, template, rank
 lib/mining.ts       the cache and the single background pass in front of it
+lib/quick-replies.ts quick replies: learn from history, read thread state, pick chips
 lib/cli.ts          bb prompts …
 lib/agent-tools.ts  prompts_* tools
 lib/test-host.ts    a fake bb, enough to drive server.ts in tests
 app.tsx             registrations only
-app/                shared.ts, rows, dialogs, actions, queue-view, composer, manager
+app/                shared.ts, rows, dialogs, actions, queue-view, composer, manager, quick-replies
 scripts/            capture-screenshots.mjs: drives a real bb for the images above
 ```
 

@@ -20,6 +20,13 @@ The Prompts panel (left sidebar) also proposes snippets on its own: it mines
 bb's prompt history for prompts the user keeps retyping and offers them, one
 click to save. Proposals the user dismisses stay dismissed.
 
+Above each thread's composer the plugin shows **quick replies**: one-tap
+prompts that fit the thread's state (Continue after a stop, the user's usual
+follow-ups after a finished turn, Status any time). They are the user's
+controls; agents never trigger them. The user edits them in the plugin's
+settings (`quickReplies`, `quickReplyTap`, `quickRepliesAfterStop`,
+`quickRepliesAfterDone`, `quickRepliesAnyTime`).
+
 ## When to use
 
 - The user mentions work to do *after* the current task ("later", "after this",

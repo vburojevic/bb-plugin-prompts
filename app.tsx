@@ -5,6 +5,8 @@
 //   pill, each opening a focused popover.
 // - Composer plus-menu: "Queue current draft" and "Save draft as snippet".
 // - Composer banner: armed/paused state while relevant.
+// - Quick replies: one-tap prompts above a thread's composer, fit to the
+//   thread's state (Continue after a stop, common follow-ups after a finish).
 // - Thread tab (an action in the side panel): the same view.
 // - Nav panel: the manager, with every queue and the snippet library.
 //
@@ -12,6 +14,7 @@
 import { definePluginApp, useBbContext } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { ArmedBanner, QueueButton, SnippetsButton } from "./app/composer";
+import { QuickReplies } from "./app/quick-replies";
 import { ManagerPanel } from "./app/manager";
 import { QueueView } from "./app/queue-view";
 import {
@@ -108,6 +111,14 @@ export default definePluginApp((app) => {
         },
       },
     ],
+  });
+
+  // Thread composers only: a new thread has no turn to follow up on, and a
+  // queued-message editor is editing one message, not sending the next.
+  app.composer.customize({
+    id: "quick-replies",
+    scopes: ["thread"],
+    banners: [{ id: "quick-replies", chrome: "bare", component: QuickReplies }],
   });
 
   app.slots.experimental_tab({

@@ -298,6 +298,20 @@ export const rpcContract = defineRpcContract({
       lastError: z.string().nullable(),
     }),
   },
+  /** Quick-reply chips learned from local prompt history, most typed first. */
+  quickReplies: {
+    input: z.null(),
+    output: z.object({
+      learned: z.array(
+        z.object({ label: z.string(), text: z.string(), count: z.number() }),
+      ),
+      computedAt: z.number(),
+      /** A history scan is running; results arrive on the suggestions signal. */
+      computing: z.boolean(),
+      /** False when history scanning is switched off in settings. */
+      enabled: z.boolean(),
+    }),
+  },
   dismissSuggestion: {
     input: z.object({ key: z.string(), body: z.string() }).strict(),
     output: z.object({ dismissed: z.boolean() }),
