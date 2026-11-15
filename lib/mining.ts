@@ -36,9 +36,6 @@ export interface SuggestionCache {
 
 export interface QuickReplyRead {
   learned: LearnedReply[];
-  computedAt: number;
-  computing: boolean;
-  enabled: boolean;
 }
 
 export interface MinerDeps {
@@ -185,12 +182,7 @@ export function createMiner(deps: MinerDeps) {
       cache.quickReplies === undefined ||
       now() - cache.computedAt >= SUGGESTION_TTL_MS;
     if (enabled && stale) void start();
-    return {
-      learned: cache?.quickReplies ?? [],
-      computedAt: cache?.computedAt ?? 0,
-      computing: mining !== null,
-      enabled,
-    };
+    return { learned: cache?.quickReplies ?? [] };
   }
 
   return {

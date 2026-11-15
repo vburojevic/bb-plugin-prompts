@@ -302,14 +302,7 @@ export const rpcContract = defineRpcContract({
   quickReplies: {
     input: z.null(),
     output: z.object({
-      learned: z.array(
-        z.object({ label: z.string(), text: z.string(), count: z.number() }),
-      ),
-      computedAt: z.number(),
-      /** A history scan is running; results arrive on the suggestions signal. */
-      computing: z.boolean(),
-      /** False when history scanning is switched off in settings. */
-      enabled: z.boolean(),
+      learned: z.array(z.object({ label: z.string(), text: z.string() })),
     }),
   },
   dismissSuggestion: {

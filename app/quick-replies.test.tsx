@@ -24,7 +24,8 @@ function render(options: {
   text?: string;
   settings?: Record<string, string | boolean>;
   retry?: () => Promise<unknown>;
-  learned?: { label: string; text: string; count: number }[];
+  learned?: { label: string; text: string }[];
+  threadListed?: boolean;
 }) {
   const retryCalls: unknown[] = [];
   const slot = renderSlot(
@@ -48,7 +49,7 @@ function render(options: {
         status: "ready",
         threads: [
           {
-            id: THREAD,
+            id: options.threadListed === false ? "thr_other" : THREAD,
             status: options.status ?? "idle",
             hasPendingInteraction: options.pending ?? false,
           } as never,
@@ -57,12 +58,9 @@ function render(options: {
       rpc: {
         quickReplies: () => ({
           learned: options.learned ?? [
-            { label: "Write the docs", text: "write the docs", count: 9 },
-            { label: "Ship the build", text: "ship the build", count: 5 },
+            { label: "Write the docs", text: "write the docs" },
+            { label: "Ship the build", text: "ship the build" },
           ],
-          computedAt: 1,
-          computing: false,
-          enabled: true,
         }),
       } as never,
       sdk: {
@@ -127,6 +125,28 @@ describe("QuickReplies", () => {
     );
     await waitFor(() => expect(slot.inspection.composer.submits).toHaveLength(1));
     expect(retryCalls).toHaveLength(1);
+  });
+
+  it("retries a failed turn even when the sidebar does not list the thread", async () => {
+    const { slot, retryCalls } = render({ outcome: "failed", threadListed: false });
+    fireEvent.click(
+      await slot.findByRole("button", { name: "Keep going: retry the failed turn" }),
+    );
+    await waitFor(() => expect(retryCalls).toHaveLength(1));
+    expect(slot.inspection.composer.submits).toHaveLength(0);
+  });
+
+  it("does not claim to retry when the tap only fills the composer", async () => {
+    const { slot, retryCalls } = render({
+      outcome: "failed",
+      status: "error",
+      settings: { quickReplyTap: "fill" },
+    });
+    const chip = await slot.findByRole("button", { name: "Add to draft: keep going" });
+    expect(chip.getAttribute("title")).toBe("keep going");
+    fireEvent.click(chip);
+    await waitFor(() => expect(slot.inspection.composer.text).toBe("keep going"));
+    expect(retryCalls).toHaveLength(0);
   });
 
   it("adds to an existing draft instead of sending it", async () => {

@@ -184,16 +184,20 @@ export function learnQuickReplies(
     .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
 
   // Most typed first, so a typo always meets its canonical spelling already
-  // kept. Only frequent phrases can absorb typos: comparing every pair of a
-  // long tail costs more than it finds.
+  // kept. Only a phrase typed at least QUICK_REPLY_MIN_COUNT times can absorb
+  // typos (isTypoOf wants it three times as common), so the long tail is
+  // never compared pairwise: that ran for seconds on a large history.
   const kept: { key: string; count: number; forms: Map<string, number> }[] = [];
+  const absorbers: typeof kept = [];
   for (const group of ranked) {
-    const home = kept.find((candidate) => isTypoOf(group, candidate));
+    const home = absorbers.find((candidate) => isTypoOf(group, candidate));
     if (home) {
       home.count += group.count;
       continue;
     }
-    kept.push({ key: group.key, count: group.count, forms: new Map(group.forms) });
+    const entry = { key: group.key, count: group.count, forms: new Map(group.forms) };
+    kept.push(entry);
+    if (entry.count >= QUICK_REPLY_MIN_COUNT) absorbers.push(entry);
   }
 
   return kept

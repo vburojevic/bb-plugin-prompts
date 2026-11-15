@@ -191,7 +191,7 @@ export function QuickReplies() {
       }
       setBusy(true);
       try {
-        if (chip.retry && status === "error") {
+        if (chip.retry) {
           try {
             await sdk.threads.retry({ threadId, reason: "Quick reply" });
             return;
@@ -207,7 +207,7 @@ export function QuickReplies() {
         setBusy(false);
       }
     },
-    [busy, threadId, fillOnly, composer, fill, send, status, sdk],
+    [busy, threadId, fillOnly, composer, fill, send, sdk],
   );
 
   if (!enabled || chips.length === 0) return null;
@@ -221,17 +221,21 @@ export function QuickReplies() {
       // full width; the scrollbar is hidden, the cut-off chip says "more".
       className="mb-1.5 flex gap-1.5 overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
-      {chips.map((chip) => (
+      {chips.map((chip) => {
+        const fills = fillOnly || !composer.isEmpty;
+        // A tap that fills the composer does not retry, so it must not say so.
+        const retries = chip.retry && !fills;
+        return (
         <button
           key={`${chip.retry ? "retry:" : ""}${chip.text}`}
           type="button"
           disabled={busy || composer.isSubmitting}
           onClick={() => void run(chip)}
-          title={chip.retry ? `Retry the failed turn` : chip.text}
+          title={retries ? "Retry the failed turn" : chip.text}
           aria-label={
-            chip.retry
+            retries
               ? `${chip.label}: retry the failed turn`
-              : fillOnly || !composer.isEmpty
+              : fills
                 ? `Add to draft: ${chip.text}`
                 : `Send: ${chip.text}`
           }
@@ -245,7 +249,7 @@ export function QuickReplies() {
               : "border-border text-muted-foreground hover:bg-state-hover hover:text-foreground",
           )}
         >
-          {chip.retry ? (
+          {retries ? (
             <Icon
               name="ArrowReloadHorizontal"
               className="size-3.5 shrink-0 max-md:pointer-coarse:size-4"
@@ -254,7 +258,8 @@ export function QuickReplies() {
           ) : null}
           {shortLabel(chip.label)}
         </button>
-      ))}
+        );
+      })}
     </div>
   );
 }
