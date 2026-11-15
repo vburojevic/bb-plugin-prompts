@@ -298,6 +298,13 @@ export const rpcContract = defineRpcContract({
       lastError: z.string().nullable(),
     }),
   },
+  /** Quick-reply chips learned from local prompt history, most typed first. */
+  quickReplies: {
+    input: z.null(),
+    output: z.object({
+      learned: z.array(z.object({ label: z.string(), text: z.string() })),
+    }),
+  },
   dismissSuggestion: {
     input: z.object({ key: z.string(), body: z.string() }).strict(),
     output: z.object({ dismissed: z.boolean() }),

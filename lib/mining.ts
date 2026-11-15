@@ -6,6 +6,7 @@
 // event loop, so none of them may ever await it: reads answer from cache and
 // kick at most one background mine, which announces itself over realtime.
 
+import { learnQuickReplies, type LearnedReply } from "./quick-replies";
 import {
   filterSuggestions,
   suggestSnippets,
@@ -25,6 +26,16 @@ export interface SuggestionCache {
   considered: number;
   dropped: number;
   suggestions: Suggestion[];
+  /**
+   * The short prompts typed most, for the quick-reply chips. Learned in the
+   * same pass because the history read is the expensive part. Missing in a
+   * cache written before quick replies existed.
+   */
+  quickReplies?: LearnedReply[];
+}
+
+export interface QuickReplyRead {
+  learned: LearnedReply[];
 }
 
 export interface MinerDeps {
@@ -98,6 +109,7 @@ export function createMiner(deps: MinerDeps) {
             .slice(0, 3)
             .map((variant) => variant.slice(0, 300)),
         })),
+        quickReplies: learnQuickReplies(history),
       };
       // The in-memory copy is authoritative for this process: if the kv write
       // fails, a stale-forever cache would re-mine on every single read.
@@ -158,8 +170,24 @@ export function createMiner(deps: MinerDeps) {
     };
   }
 
+  /**
+   * The learned quick replies. Like `read`, never waits on a mine: a stale,
+   * missing, or pre-quick-reply cache kicks one in the background.
+   */
+  async function readQuickReplies(): Promise<QuickReplyRead> {
+    const enabled = deps.isEnabled();
+    const cache = enabled ? await readCache() : null;
+    const stale =
+      cache === null ||
+      cache.quickReplies === undefined ||
+      now() - cache.computedAt >= SUGGESTION_TTL_MS;
+    if (enabled && stale) void start();
+    return { learned: cache?.quickReplies ?? [] };
+  }
+
   return {
     read,
+    readQuickReplies,
     start,
     /** The in-flight mine, for callers that want to wait briefly on it. */
     inFlight: () => mining,

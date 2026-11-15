@@ -29,6 +29,7 @@ import {
   type ThreadInfo,
 } from "./lib/operations";
 import { errorText } from "./lib/queued-messages";
+import { DEFAULT_AFTER_STOP, DEFAULT_ANY_TIME } from "./lib/quick-replies";
 import { createStore, MIGRATIONS, type ScopeRef } from "./lib/store";
 import type { HistoryPrompt } from "./lib/suggest";
 import { parseTokens } from "./lib/template";
@@ -79,6 +80,48 @@ export default function plugin(bb: BbPluginApi) {
       label: "Suggest snippets from prompt history",
       options: ["on", "off"],
       default: "on",
+    },
+    // Read by the frontend through useSettings(); the server only declares
+    // them. Each list is one chip per line: "Label | text to send", or just
+    // the text.
+    quickReplies: {
+      type: "boolean",
+      label: "Quick replies",
+      description:
+        "A row of one-tap prompts above a thread's composer that fits the thread's state.",
+      default: true,
+    },
+    quickReplyTap: {
+      type: "select",
+      label: "Tapping a quick reply",
+      description:
+        "Send sends it at once. With a draft in the composer, a quick reply is always added to the draft instead.",
+      options: ["send", "fill"],
+      experimental_optionLabels: { send: "Sends it", fill: "Fills the composer" },
+      default: "send",
+    },
+    quickRepliesAfterStop: {
+      type: "string",
+      label: "After a failed or interrupted turn",
+      description:
+        "One per line: Label | text to send, or just the text. After a failure the first one retries the failed turn.",
+      experimental_multiline: true,
+      default: DEFAULT_AFTER_STOP,
+    },
+    quickRepliesAfterDone: {
+      type: "string",
+      label: "After a finished turn",
+      description:
+        "One per line. Leave empty to show the short prompts you type most, learned from prompt history on this machine (needs snippet suggestions on).",
+      experimental_multiline: true,
+      default: "",
+    },
+    quickRepliesAnyTime: {
+      type: "string",
+      label: "Any time",
+      description: "One per line. Shown in every state, also while the agent works.",
+      experimental_multiline: true,
+      default: DEFAULT_ANY_TIME,
     },
   });
 
@@ -503,6 +546,9 @@ export default function plugin(bb: BbPluginApi) {
     },
     suggestSnippets({ refresh }) {
       return miner.read(refresh);
+    },
+    quickReplies() {
+      return miner.readQuickReplies();
     },
     dismissSuggestion({ key, body }) {
       store.dismissSuggestion(key, body);
