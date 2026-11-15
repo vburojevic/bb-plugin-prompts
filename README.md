@@ -197,6 +197,11 @@ Most of what you type into a thread is short and the same every time. Quick
 replies put those prompts one tap away, in a row above the composer that
 scrolls sideways on a phone and follows the thread's state:
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/quick-replies-failed-dark.png">
+  <img src="assets/screenshots/quick-replies-failed.png" width="100%" alt="After a turn failed on a rate limit, the quick-reply row above the composer leads with Continue, marked with a retry icon, followed by Status.">
+</picture>
+
 | The thread                       | The row leads with                                  |
 | -------------------------------- | --------------------------------------------------- |
 | Last turn failed (rate limit, provider error) | **Continue**, which retries the failed turn |

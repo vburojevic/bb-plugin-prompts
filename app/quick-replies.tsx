@@ -243,7 +243,7 @@ export function QuickReplies() {
             "flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-full border px-2.5 text-xs transition-colors",
             "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
             "disabled:pointer-events-none disabled:opacity-50",
-            "max-md:pointer-coarse:h-9 max-md:pointer-coarse:px-3.5 max-md:pointer-coarse:text-sm",
+            "max-md:pointer-coarse:h-10 max-md:pointer-coarse:px-3.5 max-md:pointer-coarse:text-sm",
             chip.primary
               ? "border-primary/40 text-primary hover:bg-primary/10"
               : "border-border text-muted-foreground hover:bg-state-hover hover:text-foreground",
