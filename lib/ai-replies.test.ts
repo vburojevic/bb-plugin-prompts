@@ -237,7 +237,7 @@ describe("parseSuggestReply", () => {
 });
 
 describe("rankHabits", () => {
-  it("ranks taps up, dismissals down, and drops what was dismissed twice", () => {
+  it("ranks taps up and drops what was dismissed more often than tapped", () => {
     const habits = [
       { text: "commit and push", count: 50 },
       { text: "run the tests", count: 40 },
@@ -247,10 +247,11 @@ describe("rankHabits", () => {
       habits,
       new Map([
         ["run the tests", { taps: 4, dismissals: 0 }],
-        ["commit and push", { taps: 0, dismissals: 1 }],
-        ["status", { taps: 0, dismissals: 2 }],
+        ["commit and push", { taps: 1, dismissals: 1 }],
+        ["status", { taps: 0, dismissals: 1 }],
       ]),
     );
+    // run the tests: 40 + 4 taps × 5 = 60; commit and push: 50 + 5 = 55; status: dismissed.
     expect(ranked.map((habit) => habit.text)).toEqual(["run the tests", "commit and push"]);
   });
 });

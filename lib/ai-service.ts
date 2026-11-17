@@ -207,14 +207,14 @@ export function createAiReplies(deps: AiServiceDeps) {
     if (transcript.turnKey === null)
       return { status: "empty", turnKey: null, replies: [], error: null, model: null };
 
-    let entry = entries.get(threadId) ?? null;
-    if (entry === null || entry.turnKey !== transcript.turnKey) {
+    if (entries.get(threadId)?.turnKey !== transcript.turnKey) {
       const saved = await persisted(threadId);
-      if (saved && saved.turnKey === transcript.turnKey) {
+      if (saved && saved.turnKey === transcript.turnKey && entries.get(threadId)?.turnKey !== saved.turnKey)
         entries.set(threadId, saved);
-        entry = saved;
-      }
     }
+    // Read after every wait: a read that overlapped this one may have started
+    // this turn's generation already, and two would cost two model calls.
+    const entry = entries.get(threadId) ?? null;
     const current = entry !== null && entry.turnKey === transcript.turnKey;
     if (current && !options.refresh) return view(entry!);
     if (current && entry!.status === "pending") return view(entry!);

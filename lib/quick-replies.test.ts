@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   defaultFocus,
   rowFor,
-  chipsFor,
   editDistance,
   FALLBACK_FOLLOW_UPS,
   labelFor,
@@ -205,26 +204,35 @@ describe("quickReplyState", () => {
   });
 });
 
-describe("chipsFor", () => {
+describe("rowFor without AI", () => {
   const learned = learnQuickReplies([
     ...typed("write the docs", 9),
     ...typed("ship the build", 6),
   ]);
+  const chipsFor = (state: Parameters<typeof rowFor>[0]["state"], config = CONFIG, from = learned) =>
+    rowFor({
+      state,
+      config,
+      learned: from,
+      snippets: [],
+      ai: { status: "off", replies: [] },
+      draft: "",
+      dismissed: new Set(),
+    }).items;
 
   it("leads with the first after-stop chip after a failure, as a retry", () => {
-    const chips = chipsFor("failed", CONFIG, learned);
+    const chips = chipsFor("failed");
     expect(chips.map((chip) => chip.text)).toEqual(["keep going", "Try again", "progress?"]);
-    expect(chips[0]).toMatchObject({ primary: true, retry: true });
-    expect(chips[1]).toMatchObject({ primary: false, retry: false });
+    expect(chips[0]).toMatchObject({ primary: true, action: "retry" });
+    expect(chips[1]).toMatchObject({ primary: false, action: "send" });
   });
 
   it("sends text, never a retry, after an interrupt", () => {
-    const chips = chipsFor("interrupted", CONFIG, learned);
-    expect(chips[0]).toMatchObject({ text: "keep going", primary: true, retry: false });
+    expect(chipsFor("interrupted")[0]).toMatchObject({ text: "keep going", primary: true, action: "send" });
   });
 
   it("offers learned follow-ups after a finished turn", () => {
-    expect(chipsFor("finished", CONFIG, learned).map((chip) => chip.text)).toEqual([
+    expect(chipsFor("finished").map((chip) => chip.text)).toEqual([
       "write the docs",
       "ship the build",
       "progress?",
@@ -233,10 +241,7 @@ describe("chipsFor", () => {
 
   it("prefers the user's own follow-up list over learned ones", () => {
     const config = { ...CONFIG, afterDone: parseReplyLines("Deploy | deploy it") };
-    expect(chipsFor("finished", config, learned).map((chip) => chip.text)).toEqual([
-      "deploy it",
-      "progress?",
-    ]);
+    expect(chipsFor("finished", config).map((chip) => chip.text)).toEqual(["deploy it", "progress?"]);
   });
 
   it("falls back to generic follow-ups when nothing was learned", () => {
@@ -256,13 +261,12 @@ describe("chipsFor", () => {
     expect(chips.length).toBeLessThanOrEqual(QUICK_REPLY_FOLLOW_UPS + 1);
   });
 
-  it("shows only any-time chips while running or before any turn", () => {
-    expect(chipsFor("running", CONFIG, learned).map((chip) => chip.text)).toEqual(["progress?"]);
-    expect(chipsFor("unknown", CONFIG, learned).map((chip) => chip.text)).toEqual(["progress?"]);
+  it("shows only any-time chips before any turn", () => {
+    expect(chipsFor("unknown").map((chip) => chip.text)).toEqual(["progress?"]);
   });
 
   it("shows nothing while the agent waits on an answer", () => {
-    expect(chipsFor("waiting", CONFIG, learned)).toEqual([]);
+    expect(chipsFor("waiting")).toEqual([]);
   });
 });
 

@@ -104,6 +104,17 @@ describe("createAiReplies", () => {
     expect(requests).toHaveLength(3);
   });
 
+  it("starts one generation when two reads of a new turn overlap", async () => {
+    const { service, requests } = setup();
+    const [a, b] = await Promise.all([
+      service.read("thr_demo", { outcome: "finished", refresh: false }),
+      service.read("thr_demo", { outcome: "finished", refresh: false }),
+    ]);
+    await flush();
+    expect([a.status, b.status]).toEqual(["pending", "pending"]);
+    expect(requests).toHaveLength(1);
+  });
+
   it("does not start a second generation while one runs", async () => {
     const { service, requests, setAnswer } = setup();
     let release: (value: string) => void = () => {};

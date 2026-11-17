@@ -289,61 +289,6 @@ export interface QuickReplyConfig {
   anyTime: readonly QuickReply[];
 }
 
-export interface Chip extends QuickReply {
-  /** Leads the row: the chip the state calls for. */
-  primary: boolean;
-  /** Re-run the failed turn instead of sending text. */
-  retry: boolean;
-}
-
-/**
- * The chips for a state, in order: what the state calls for first, then the
- * any-time ones. A text shown twice keeps its first place.
- */
-export function chipsFor(
-  state: QuickReplyState,
-  config: QuickReplyConfig,
-  learned: readonly QuickReply[],
-): Chip[] {
-  const lead: Chip[] = [];
-  if (state === "failed" || state === "interrupted") {
-    config.afterStop.forEach((reply, index) =>
-      lead.push({
-        ...reply,
-        primary: index === 0,
-        // Only after a failure, and only the first chip: that is the one the
-        // owner picked to re-run the failed turn. An interrupt was on purpose;
-        // the next message is the user's to write, so it is sent as text.
-        retry: state === "failed" && index === 0,
-      }),
-    );
-  } else if (state === "finished") {
-    const source =
-      config.afterDone.length > 0
-        ? config.afterDone
-        : learned.length > 0
-          ? learned
-          : FALLBACK_FOLLOW_UPS;
-    for (const reply of source.slice(0, QUICK_REPLY_FOLLOW_UPS))
-      lead.push({ label: reply.label, text: reply.text, primary: false, retry: false });
-  } else if (state === "waiting") {
-    return [];
-  }
-
-  const out: Chip[] = [];
-  const seen = new Set<string>();
-  for (const chip of [
-    ...lead,
-    ...config.anyTime.map((reply) => ({ ...reply, primary: false, retry: false })),
-  ]) {
-    const key = replyKey(chip.text);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(chip);
-  }
-  return out;
-}
-
 /** A label cut to fit a chip; the full text belongs in the tooltip. */
 export function shortLabel(label: string): string {
   return label.length > QUICK_REPLY_LABEL_CHARS

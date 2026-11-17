@@ -43,11 +43,16 @@ const SAFE_ARG = /^[\w.:/@-]+$/;
 /**
  * The environment for a CLI the plugin starts: the user's own, minus the
  * variables an agent session sets to point a child `claude` at the session's
- * proxy, where it reports "Not logged in".
+ * proxy, where it reports "Not logged in". A token or key the user set to
+ * sign the CLI in stays.
  */
 export function cliEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(env)) {
+    if (key === "CLAUDE_CODE_OAUTH_TOKEN" || key === "ANTHROPIC_API_KEY") {
+      out[key] = value;
+      continue;
+    }
     if (/^(ANTHROPIC_|CLAUDE_CODE_|_CLAUDE_CODE_|CLAUDECODE$|CLAUDE_AGENT_SDK)/.test(key)) continue;
     out[key] = value;
   }

@@ -255,6 +255,14 @@ function useAiReplies(threadId: string | null, state: QuickReplyState) {
     [rpc, threadId, outcome],
   );
 
+  // A new turn starts: the last read answered the turn before it, and must
+  // not come back when this one ends, before its own read lands.
+  useEffect(() => {
+    if (outcome === null) {
+      latest.current += 1;
+      setRead(AI_IDLE);
+    }
+  }, [outcome]);
   useEffect(() => load(false), [load]);
   usePromptSignal(
     ["quick-replies"],
@@ -291,6 +299,8 @@ function useAltHeld(): boolean {
 }
 
 const EMPTY_KEYS: ReadonlySet<string> = new Set();
+/** How long the model's picks wait after the user last moved or typed in the row. */
+const HOLD_MS = 1_200;
 const LONG_PRESS_MS = 420;
 
 // ---------------------------------------------------------------------------
@@ -342,11 +352,46 @@ export function QuickReplies() {
   });
   const dismissedKeys = dismissed.turnKey === ai.turnKey ? dismissed.keys : EMPTY_KEYS;
 
-  // The model's picks wait while the pointer or focus is on the row, so a
-  // chip never moves out from under a tap that is already on its way.
-  const [interacting, setInteracting] = useState(false);
-  const held = useRef<{ status: AiStatus; replies: AiReplyDto[] }>({ status: ai.status, replies: ai.replies });
-  if (!interacting) held.current = { status: ai.status, replies: ai.replies };
+  // The model's picks wait while the user is in the middle of using the row
+  // (moving, pressing or typing there in the last moment), so a chip never
+  // changes under a tap that is already on its way. A resting pointer does
+  // not hold them, picks for an older turn never stay, and a regenerate the
+  // user asked for shows as soon as it lands.
+  const busyUntil = useRef(0);
+  const releaseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [, rerender] = useState(0);
+  const touchRow = useCallback(() => {
+    busyUntil.current = Date.now() + HOLD_MS;
+    if (releaseTimer.current !== null) clearTimeout(releaseTimer.current);
+    releaseTimer.current = setTimeout(() => {
+      releaseTimer.current = null;
+      rerender((n) => n + 1);
+    }, HOLD_MS + 20);
+  }, []);
+  useEffect(
+    () => () => {
+      if (releaseTimer.current !== null) clearTimeout(releaseTimer.current);
+    },
+    [],
+  );
+  const userAsked = useRef(false);
+  const held = useRef<{ turnKey: string | null; status: AiStatus; replies: AiReplyDto[] }>({
+    turnKey: ai.turnKey,
+    status: ai.status,
+    replies: ai.replies,
+  });
+  const h = held.current;
+  const hold =
+    Date.now() < busyUntil.current &&
+    !userAsked.current &&
+    state !== "running" &&
+    ai.status === "ready" &&
+    h.status !== "ready" &&
+    (h.turnKey === null || h.turnKey === ai.turnKey);
+  if (!hold) {
+    held.current = { turnKey: ai.turnKey, status: ai.status, replies: ai.replies };
+    if (ai.status === "ready" || ai.status === "error") userAsked.current = false;
+  }
   const shownAi = held.current;
 
   const draft = composer.text;
@@ -507,13 +552,14 @@ export function QuickReplies() {
   useEffect(() => clearPress, []);
 
   const toolbar = useRef<HTMLDivElement | null>(null);
-  const moveFocus = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft" && event.key !== "Escape") return;
+  const backToComposer = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Escape") return;
     event.preventDefault();
-    if (event.key === "Escape") {
-      composer.focus();
-      return;
-    }
+    composer.focus();
+  };
+  const moveFocus = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+    event.preventDefault();
     const chips = Array.from(toolbar.current?.querySelectorAll<HTMLButtonElement>("[data-chip]") ?? []);
     const at = chips.indexOf(document.activeElement as HTMLButtonElement);
     const next = event.key === "ArrowRight" ? at + 1 : at - 1;
@@ -531,14 +577,17 @@ export function QuickReplies() {
     <div
       className="mb-2 flex flex-col gap-1.5"
       data-quick-replies={row.mode}
-      onMouseEnter={() => setInteracting(true)}
-      onMouseLeave={() => {
-        setInteracting(false);
-        setFocus(null);
+      onKeyDown={(event) => {
+        touchRow();
+        backToComposer(event);
       }}
-      onFocus={() => setInteracting(true)}
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setInteracting(false);
+      onMouseMove={touchRow}
+      onPointerDown={touchRow}
+      onFocus={touchRow}
+      onMouseLeave={() => {
+        busyUntil.current = 0;
+        rerender((n) => n + 1);
+        setFocus(null);
       }}
     >
       {row.spotlight ? (
@@ -549,7 +598,18 @@ export function QuickReplies() {
           busy={busy || composer.isSubmitting}
           onRun={(chip) => void run(chip)}
           onEdit={edit}
-          onDismiss={dismiss}
+          onDismiss={(chip, fromKeyboard) => {
+            dismiss(chip);
+            // The focused Dismiss button goes away with the chip: hand focus
+            // to the next chip, or back to the composer when none is left.
+            if (fromKeyboard)
+              requestAnimationFrame(() => {
+                const next = toolbar.current?.querySelector<HTMLButtonElement>("[data-chip]");
+                if (next) next.focus();
+                else composer.focus();
+              });
+          }}
+          fills={fillOnly || !composer.isEmpty}
         />
       ) : null}
       <div className="flex min-w-0 items-center gap-1.5">
@@ -649,7 +709,10 @@ export function QuickReplies() {
         {canRegenerate ? (
           <button
             type="button"
-            onClick={() => ai.refresh()}
+            onClick={() => {
+              userAsked.current = true;
+              ai.refresh();
+            }}
             disabled={loading}
             title={ai.status === "error" && ai.error ? `Could not suggest: ${ai.error}. Try again` : "Suggest again"}
             aria-label={ai.status === "error" ? "Try suggesting again" : "Suggest again"}
@@ -663,7 +726,7 @@ export function QuickReplies() {
           >
             <Icon
               name="RotateCcw"
-              className={cn("size-3.5", loading ? "animate-spin [animation-direction:reverse]" : "")}
+              className={cn("size-3.5", loading ? "animate-spin [animation-direction:reverse] motion-reduce:animate-none" : "")}
               aria-hidden
             />
           </button>
@@ -684,6 +747,7 @@ function Spotlight({
   onRun,
   onEdit,
   onDismiss,
+  fills,
 }: {
   chip: RowItem | null;
   index: number;
@@ -691,7 +755,9 @@ function Spotlight({
   busy: boolean;
   onRun(chip: RowItem): void;
   onEdit(chip: RowItem): void;
-  onDismiss(chip: RowItem): void;
+  onDismiss(chip: RowItem, fromKeyboard: boolean): void;
+  /** A tap adds to the draft instead of sending (a draft, or the fill setting). */
+  fills: boolean;
 }) {
   if (chip === null)
     return (
@@ -700,7 +766,7 @@ function Spotlight({
         className="flex h-[60px] items-center gap-2 rounded-xl bg-muted/50 px-3.5 text-[13px] text-muted-foreground animate-in fade-in-0 duration-200 max-md:pointer-coarse:h-[92px] max-md:pointer-coarse:text-sm"
       >
         <Icon name="Sparkles" className="size-3.5 shrink-0" aria-hidden />
-        <span className="animate-pulse">Reading the last reply</span>
+        <span className="animate-pulse motion-reduce:animate-none">Reading the last reply</span>
       </div>
     );
 
@@ -712,7 +778,13 @@ function Spotlight({
         ? "Best next step"
         : KIND_NAME[chip.kind];
   const verb =
-    chip.action === "complete" || chip.action === "fill" ? "Use" : chip.action === "queue" ? "Queue" : "Send";
+    chip.action === "complete" || chip.action === "fill"
+      ? "Use"
+      : chip.action === "queue"
+        ? "Queue"
+        : fills
+          ? "Add to draft"
+          : "Send";
   return (
     <div className="rounded-xl bg-muted/50" aria-live="polite">
       <div
@@ -745,7 +817,7 @@ function Spotlight({
           {chip.kind !== "retry" ? (
             <button
               type="button"
-              onClick={() => onDismiss(chip)}
+              onClick={(event) => onDismiss(chip, event.detail === 0)}
               aria-label={`Dismiss: ${chip.label}`}
               title="Dismiss. Quick replies learn from it"
               className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 max-md:pointer-coarse:size-10"

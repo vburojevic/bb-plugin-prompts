@@ -60,10 +60,17 @@ describe("cliCommand", () => {
     expect(cliCommand("claude-code", "x; rm -rf ~", null, "/tmp/out")).toBeNull();
   });
 
-  it("strips an agent session's Claude variables from the CLI's environment", () => {
-    expect(cliEnv({ PATH: "/usr/bin", ANTHROPIC_BASE_URL: "x", CLAUDE_CODE_SESSION_ID: "y", CLAUDECODE: "1" })).toEqual({
-      PATH: "/usr/bin",
-    });
+  it("strips an agent session's proxy variables but keeps the CLI's own sign-in", () => {
+    expect(
+      cliEnv({
+        PATH: "/usr/bin",
+        ANTHROPIC_BASE_URL: "x",
+        CLAUDE_CODE_SESSION_ID: "y",
+        CLAUDECODE: "1",
+        CLAUDE_CODE_OAUTH_TOKEN: "token",
+        ANTHROPIC_API_KEY: "key",
+      }),
+    ).toEqual({ PATH: "/usr/bin", CLAUDE_CODE_OAUTH_TOKEN: "token", ANTHROPIC_API_KEY: "key" });
   });
 });
 

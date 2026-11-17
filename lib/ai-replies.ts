@@ -8,7 +8,7 @@
 //
 // No bb or node imports: the server and the frontend share it.
 
-import { replyKey } from "./quick-replies";
+import { labelFor, replyKey } from "./quick-replies";
 
 /** Where a reply came from; the chip shows a different mark for each. */
 export type AiReplyKind = "answer" | "ai" | "habit" | "snippet";
@@ -272,11 +272,6 @@ function oneLine(value: unknown, cap: number): string {
   return text.length > cap ? `${text.slice(0, cap - 1).trimEnd()}…` : text;
 }
 
-function sentenceCase(text: string): string {
-  if (!text || text.startsWith("/")) return text;
-  return text.charAt(0).toUpperCase() + text.slice(1);
-}
-
 export interface ParseContext {
   habits: readonly { text: string }[];
   snippets: readonly { id: string; title: string; body: string }[];
@@ -327,7 +322,7 @@ export function parseSuggestReply(raw: string, context: ParseContext): AiReply[]
     if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push({
-      label: sentenceCase(label),
+      label: labelFor(label),
       text,
       kind,
       why: oneLine(entry.why, WHY_CAP),
@@ -433,8 +428,8 @@ export interface ReplyFeedback {
 
 /**
  * Habits reordered by what the user did with them in this project: a tap is
- * worth five sends, a dismissal costs ten, and a habit dismissed twice and
- * never tapped since is dropped.
+ * worth five sends, and a habit dismissed more often than tapped is dropped,
+ * the same rule that keeps the model from suggesting it again.
  */
 export function rankHabits<T extends { text: string; count: number }>(
   habits: readonly T[],
@@ -445,9 +440,9 @@ export function rankHabits<T extends { text: string; count: number }>(
       const fb = feedback.get(replyKey(habit.text));
       const taps = fb?.taps ?? 0;
       const dismissals = fb?.dismissals ?? 0;
-      return { habit, index, taps, dismissals, score: habit.count + taps * 5 - dismissals * 10 };
+      return { habit, index, taps, dismissals, score: habit.count + taps * 5 };
     })
-    .filter((entry) => !(entry.dismissals >= 2 && entry.taps === 0));
+    .filter((entry) => entry.dismissals <= entry.taps);
   scored.sort((a, b) => b.score - a.score || a.index - b.index);
   return scored.map((entry) => entry.habit);
 }

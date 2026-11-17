@@ -372,15 +372,35 @@ describe("QuickReplies, with AI", () => {
     expect(calls(slot, "aiQuickReplies")).toHaveLength(0);
   });
 
-  it("holds the model's picks while the pointer is on the row", async () => {
+  it("holds the model's picks while the user is moving over the row, not after", async () => {
     const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES }, aiDelayMs: 80 });
     // The usual chips render before the model's answer is read.
     const usual = await slot.findByRole("button", { name: "Send: write the docs" });
-    fireEvent.mouseEnter(usual.closest("[data-quick-replies]")!);
+    fireEvent.mouseMove(usual.closest("[data-quick-replies]")!);
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(slot.queryByText("Best next step")).toBeNull();
-    fireEvent.mouseLeave(usual.closest("[data-quick-replies]")!);
-    expect(await slot.findByText("Best next step")).toBeTruthy();
+    // A resting pointer does not keep them away for long.
+    expect(await slot.findByText("Best next step", {}, { timeout: 2_000 })).toBeTruthy();
+  });
+
+  it("says Add to draft on the card when a tap would only join the draft", async () => {
+    const { slot } = render({ text: "half a thought", ai: { status: "ready", replies: AI_REPLIES } });
+    await slot.findByText("Best next step");
+    expect(slot.getByRole("button", { name: "Add to draft" })).toBeTruthy();
+    expect(slot.queryByRole("button", { name: "Send" })).toBeNull();
+  });
+
+  it("keeps keyboard focus in the row after a keyboard dismissal", async () => {
+    const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
+    const dismiss = await slot.findByRole("button", { name: "Dismiss: Fix the parser first" });
+    dismiss.focus();
+    // A keyboard activation reports detail 0.
+    fireEvent.click(dismiss, { detail: 0 });
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("aria-label")).toBe(
+        "Send: paste the failing input for the date parser",
+      ),
+    );
   });
 
   it("keeps the usual chips and offers a retry when the model fails", async () => {
