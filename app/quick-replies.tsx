@@ -881,8 +881,8 @@ export function QuickReplies() {
                 : cn(
                     "opacity-0 pointer-coarse:hidden",
                     loading
-                      ? "group-hover/qr:opacity-40 group-focus-within/qr:opacity-40 focus-visible:opacity-40"
-                      : "group-hover/qr:opacity-100 group-focus-within/qr:opacity-100 focus-visible:opacity-100",
+                      ? "group-hover/qr:opacity-40 group-has-[:focus-visible]/qr:opacity-40"
+                      : "group-hover/qr:opacity-100 group-has-[:focus-visible]/qr:opacity-100",
                   ),
             )}
           >
@@ -1059,7 +1059,7 @@ function ChipDetails({
               onClick={() => onDismiss(chip)}
               aria-label={`Dismiss: ${chip.label}`}
               title="Dismiss. Quick replies learn from it"
-              className={cn(button, "size-7 rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground")}
+              className={cn(button, "size-7 rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground pointer-coarse:size-10")}
             >
               <Icon name="X" className="size-3.5" aria-hidden />
             </button>
@@ -1068,7 +1068,7 @@ function ChipDetails({
             type="button"
             onClick={() => onEdit(chip)}
             title="Put it in the composer to change it first"
-            className={cn(button, "h-7 rounded-md px-2 text-xs text-muted-foreground hover:bg-state-hover hover:text-foreground")}
+            className={cn(button, "h-7 rounded-md px-2 text-xs text-muted-foreground hover:bg-state-hover hover:text-foreground pointer-coarse:h-10")}
           >
             <Icon name="Edit" className="size-3.5" aria-hidden />
             Edit
@@ -1079,7 +1079,7 @@ function ChipDetails({
               onClick={onSuggestOthers}
               aria-label="Suggest others"
               title="Suggest others"
-              className={cn(button, "size-7 rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground")}
+              className={cn(button, "size-7 rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground pointer-coarse:size-10")}
             >
               <Icon name="RotateCcw" className="size-3.5" aria-hidden />
             </button>
@@ -1088,7 +1088,7 @@ function ChipDetails({
             type="button"
             disabled={busy}
             onClick={() => onRun(chip)}
-            className={cn(button, "ml-auto h-7 gap-2 rounded-md bg-foreground px-2.5 text-xs font-medium text-background hover:opacity-90")}
+            className={cn(button, "ml-auto h-7 gap-2 rounded-md bg-foreground px-2.5 text-xs font-medium text-background hover:opacity-90 pointer-coarse:h-10 pointer-coarse:px-3.5")}
           >
             {verb}
             {index < QUICK_REPLY_SHORTCUTS ? <Keycap index={index} /> : null}

@@ -339,7 +339,9 @@ describe("QuickReplies, with AI", () => {
     const again = slot.getByRole("button", { name: "Suggest again" });
     expect(again.className).toContain("opacity-0");
     expect(again.className).toContain("group-hover/qr:opacity-100");
-    expect(again.className).toContain("group-focus-within/qr:opacity-100");
+    // Keyboard focus in the row shows it; a mouse click that leaves focus on it does not.
+    expect(again.className).toContain("group-has-[:focus-visible]/qr:opacity-100");
+    expect(again.className).not.toContain("focus-within");
   });
 
   it("keeps the arrow in view after a failure, as the retry", async () => {
