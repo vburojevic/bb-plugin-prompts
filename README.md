@@ -205,6 +205,11 @@ thread, and your own habits and snippets when they fit.
   <img src="assets/screenshots/quick-replies-ai.png" width="100%" alt="The agent asked whether to throw an error or return a result object. Above the composer, a card shows the best next step, Return a result object with the reason, with Edit and Send. Below it, a solid chip Return a result with the shortcut Option 1, then Throw an error and Status.">
 </picture>
 
+**One chip per idea.** Two phrasings of the same request ("Use ask mode",
+"Use ask mode in bb") show as one chip, and the next idea takes the freed
+place. The row sits first in the stack above the composer, over other plugins'
+banners.
+
 **The best next step leads.** It is the solid chip, and the card above the
 chips shows exactly what it sends and why. Hover or focus another chip, or
 long-press it on a phone, and the card shows that one instead. A chip's label
@@ -232,9 +237,9 @@ use rises, and what you dismiss is not suggested again.
   </picture>
 </p>
 
-**Which model, and what it costs.** On Claude Code it is Haiku 5.5; on Codex
-the fastest model bb's catalog lists; on any other provider the smallest one it
-offers. It runs once per finished turn, only for a thread on your screen, so a
+**Which model, and what it costs.** On Claude Code it is Haiku 5.5 and on
+Codex gpt-6-luna, both at medium thinking; on any other provider the smallest
+model it offers. It runs once per finished turn, only for a thread on your screen, so a
 fleet of threads you never open never calls a model. The provider's own CLI
 answers when it is signed in; otherwise a short-lived hidden bb thread on the
 same provider does, in a scratch workspace that is deleted with it, so it works

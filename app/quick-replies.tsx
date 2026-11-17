@@ -600,7 +600,10 @@ export function QuickReplies() {
 
   return (
     <div
-      className="mb-2 flex flex-col gap-1.5"
+      // First in the composer's banner stack, above every other plugin's:
+      // bb lays the banners out as one grid and wraps each in a
+      // display:contents element, so this root is the grid item `order` moves.
+      className="order-first mb-2 flex flex-col gap-1.5"
       data-quick-replies={row.mode}
       onKeyDown={(event) => {
         touchRow();
@@ -629,7 +632,7 @@ export function QuickReplies() {
     >
       {row.spotlight ? (
         <Spotlight
-          chip={loading && row.mode === "loading" ? null : focused}
+          chip={focused}
           index={shown}
           mode={row.mode}
           busy={busy || composer.isSubmitting}
@@ -733,6 +736,14 @@ export function QuickReplies() {
             );
           })}
         </div>
+        {loading ? (
+          <span
+            role="status"
+            className="shrink-0 animate-pulse text-xs text-muted-foreground motion-reduce:animate-none max-md:pointer-coarse:sr-only"
+          >
+            Reading the thread
+          </span>
+        ) : null}
         {canRegenerate ? (
           <button
             type="button"
@@ -788,16 +799,7 @@ function Spotlight({
   /** A tap adds to the draft instead of sending (a draft, or the fill setting). */
   fills: boolean;
 }) {
-  if (chip === null)
-    return (
-      <div
-        role="status"
-        className="flex h-[60px] items-center gap-2 rounded-xl bg-muted/50 px-3.5 text-[13px] text-muted-foreground animate-in fade-in-0 duration-200 max-md:pointer-coarse:h-[92px] max-md:pointer-coarse:text-sm"
-      >
-        <Icon name="Sparkles" className="size-3.5 shrink-0" aria-hidden />
-        <span className="animate-pulse motion-reduce:animate-none">Reading the last reply</span>
-      </div>
-    );
+  if (chip === null) return null;
 
   const icon = KIND_ICON[chip.kind];
   const eyebrow =
@@ -815,7 +817,10 @@ function Spotlight({
           ? "Add to draft"
           : "Send";
   return (
-    <div className="rounded-xl bg-muted/50" aria-live="polite">
+    <div
+      className="rounded-xl bg-muted/50 animate-in fade-in-0 slide-in-from-bottom-1 duration-300 ease-out motion-reduce:animate-none"
+      aria-live="polite"
+    >
       <div
         key={`${index}:${chip.text}`}
         className={cn(

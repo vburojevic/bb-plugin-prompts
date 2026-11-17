@@ -8,9 +8,9 @@
 import {
   AI_REPLY_LIMIT,
   buildSuggestPrompt,
-  lightestReasoning,
   parseSuggestReply,
   rankHabits,
+  reasoningFor,
   smallModelFor,
   type AiReply,
   type CatalogModel,
@@ -149,6 +149,7 @@ export function createAiReplies(deps: AiServiceDeps) {
         avoid: deps.avoid(meta.projectId),
         limit: AI_REPLY_LIMIT,
       });
+      const reasoningLevel = reasoningFor(catalog?.find((entry) => entry.model === model));
       const raw = await new Promise<string>((resolve, reject) => {
         const timer = setTimeout(() => {
           entry.controller?.abort();
@@ -159,7 +160,7 @@ export function createAiReplies(deps: AiServiceDeps) {
             {
               providerId: meta.providerId!,
               model,
-              reasoningLevel: lightestReasoning(catalog?.find((entry) => entry.model === model)),
+              reasoningLevel,
               prompt,
               thread: meta,
             },
@@ -175,7 +176,8 @@ export function createAiReplies(deps: AiServiceDeps) {
       entry.replies = replies;
       entry.error = null;
       deps.log.info(
-        `quick replies for ${threadId}: ${replies.length} from ${model ?? "the provider default"} ` +
+        `quick replies for ${threadId}: ${replies.length} from ${model ?? "the provider default"}` +
+          `${reasoningLevel ? ` at ${reasoningLevel}` : ""} ` +
           `in ${Math.round((now() - startedAt) / 100) / 10}s`,
       );
       void deps

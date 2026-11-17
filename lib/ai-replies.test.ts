@@ -4,10 +4,10 @@ import {
   buildSuggestPrompt,
   clip,
   extractRepliesJson,
-  lightestReasoning,
   parseModelOverrides,
   parseSuggestReply,
   rankHabits,
+  reasoningFor,
   smallModelFor,
   SMALL_MODELS,
   transcriptFromEvents,
@@ -72,10 +72,12 @@ describe("smallModelFor", () => {
     expect(parseModelOverrides("codex = gpt; rm -rf ~").size).toBe(0);
   });
 
-  it("picks the lightest reasoning level a model takes", () => {
-    expect(lightestReasoning({ model: "m", reasoningLevels: ["low", "medium", "high"] })).toBe("low");
-    expect(lightestReasoning({ model: "m", reasoningLevels: ["minimal", "low"] })).toBe("minimal");
-    expect(lightestReasoning({ model: "m" })).toBeNull();
+  it("asks for medium thinking when the model offers it", () => {
+    // The owner's call (2026-11-17): Haiku and gpt-6-luna at medium.
+    expect(reasoningFor({ model: "claude-haiku-5-5", reasoningLevels: ["low", "medium", "high", "xhigh"] })).toBe("medium");
+    expect(reasoningFor({ model: "gpt-6-luna", reasoningLevels: ["low", "medium", "high"] })).toBe("medium");
+    expect(reasoningFor({ model: "m", reasoningLevels: ["low", "high"] })).toBeNull();
+    expect(reasoningFor({ model: "m" })).toBeNull();
   });
 });
 

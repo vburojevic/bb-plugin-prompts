@@ -128,6 +128,34 @@ export function editDistance(a: string, b: string, max = 2): number {
   return d[a.length]![b.length]!;
 }
 
+/** Words that do not change what a short prompt asks for. */
+const FILLER_WORDS = new Set(
+  "a an the to in on of for and or it its this that these those please pls now just then also ok okay".split(" "),
+);
+
+function meaningWords(text: string): Set<string> {
+  return new Set(
+    replyKey(text)
+      .split(/[^\p{L}\p{N}_]+/u)
+      .filter((word) => word && !FILLER_WORDS.has(word)),
+  );
+}
+
+/**
+ * Do two prompts ask for the same thing? "use ask mode" and "use ask mode
+ * in bb" do: every meaningful word of the shorter is in the longer, and it
+ * has at least two of them. "fix it" and "fix all" do not; one word is too
+ * little to call two prompts the same.
+ */
+export function similarReplies(a: string, b: string): boolean {
+  const left = meaningWords(a);
+  const right = meaningWords(b);
+  const [small, large] = left.size <= right.size ? [left, right] : [right, left];
+  if (small.size < 2) return replyKey(a) === replyKey(b);
+  for (const word of small) if (!large.has(word)) return false;
+  return true;
+}
+
 /**
  * Is `variant` a typo of `canonical`? One slip (a wrong, missing, extra or
  * swapped letter) in a word long enough that a slip is unlikely to make a
@@ -200,7 +228,16 @@ export function learnQuickReplies(
     if (entry.count >= QUICK_REPLY_MIN_COUNT) absorbers.push(entry);
   }
 
-  return kept
+  // Two phrasings of one request ("use ask mode", "use ask mode in bb") are
+  // one habit: the counts join, the spelling typed most stays.
+  const merged: typeof kept = [];
+  for (const group of kept.sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))) {
+    const home = merged.find((candidate) => similarReplies(candidate.key, group.key));
+    if (home) home.count += group.count;
+    else merged.push(group);
+  }
+
+  return merged
     .filter((group) => group.count >= QUICK_REPLY_MIN_COUNT)
     .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))
     .slice(0, limit)
@@ -326,7 +363,8 @@ export interface RowItem {
 /**
  * - `hidden`: the agent asked something; its answer form owns the composer.
  * - `baseline`: the user's usual chips, no model involved.
- * - `loading`: the usual chips while the model reads the thread.
+ * - `loading`: the usual chips while the model reads the thread; a quiet
+ *   "Reading the thread" sits at the row's end until the picks land.
  * - `ai`: the model's picks.
  * - `queue`: the agent is working; chips wait for the turn to end.
  * - `filter`: chips that complete the draft.
@@ -384,13 +422,23 @@ function item(
   };
 }
 
+/**
+ * One chip per idea, the first one kept: an exact or near repeat ("Use ask
+ * mode" after "Use ask mode in bb") and anything dismissed drop out. Labels
+ * count too, so two chips never read the same.
+ */
 function dedupe(items: readonly RowItem[], dismissed: ReadonlySet<string>): RowItem[] {
-  const seen = new Set<string>();
   const out: RowItem[] = [];
   for (const entry of items) {
     const key = replyKey(entry.text);
-    if (!key || seen.has(key) || dismissed.has(key)) continue;
-    seen.add(key);
+    if (!key || dismissed.has(key)) continue;
+    const repeats = out.some(
+      (kept) =>
+        similarReplies(kept.text, entry.text) ||
+        similarReplies(kept.label, entry.label) ||
+        replyKey(kept.label) === replyKey(entry.label),
+    );
+    if (repeats) continue;
     out.push(entry);
   }
   return out;
@@ -401,7 +449,12 @@ function usual(config: QuickReplyConfig, learned: readonly QuickReply[]): RowIte
   const source =
     config.afterDone.length > 0 ? config.afterDone : learned.length > 0 ? learned : FALLBACK_FOLLOW_UPS;
   const kind: RowKind = config.afterDone.length > 0 ? "any" : learned.length > 0 ? "habit" : "any";
-  return source.slice(0, QUICK_REPLY_FOLLOW_UPS).map((reply) => item(reply, kind, "send"));
+  return source.map((reply) => item(reply, kind, "send"));
+}
+
+/** The first `count` distinct chips: repeats drop before counting, so the next one fills in. */
+function take(items: readonly RowItem[], count: number, dismissed: ReadonlySet<string>): RowItem[] {
+  return dedupe(items, dismissed).slice(0, count);
 }
 
 function aiItems(replies: readonly AiReplyLike[]): RowItem[] {
@@ -428,9 +481,10 @@ export function rowFor(input: RowInput): Row {
   if (state === "running") {
     // The usual follow-ups, waiting for the turn to end; any-time chips
     // (Status) still send at once.
-    const queued = usual(config, input.learned)
-      .slice(0, QUEUE_CHIPS)
-      .map((entry) => ({ ...entry, action: "queue" as const }));
+    const queued = take(usual(config, input.learned), QUEUE_CHIPS, dismissed).map((entry) => ({
+      ...entry,
+      action: "queue" as const,
+    }));
     return { mode: "queue", items: dedupe([...queued, ...anyTime], dismissed), spotlight: false };
   }
 
@@ -482,11 +536,14 @@ export function rowFor(input: RowInput): Row {
       }
       return { mode: "ai", items, spotlight: items.some((entry) => entry.best) };
     }
-    const items = dedupe([...lead, ...(state === "finished" ? usual(config, input.learned) : []), ...anyTime], dismissed);
+    const follow = state === "finished" ? take(usual(config, input.learned), QUICK_REPLY_FOLLOW_UPS, dismissed) : [];
+    const items = dedupe([...lead, ...follow, ...anyTime], dismissed);
     return {
       mode: ai.status === "pending" ? "loading" : "baseline",
       items,
-      spotlight: ai.status === "pending",
+      // No card while the model reads: an empty card held for the whole wait
+      // (often 10 to 30 s) costs more than the card sliding in at the end.
+      spotlight: false,
     };
   }
 

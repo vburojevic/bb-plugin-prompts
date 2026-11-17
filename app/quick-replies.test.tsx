@@ -233,7 +233,8 @@ describe("QuickReplies, with AI", () => {
     await waitFor(() =>
       expect(chipTexts(slot)).toEqual(["Write the docs", "Ship the build", "Progress"]),
     );
-    expect((await slot.findByRole("status")).textContent).toContain("Reading the last reply");
+    expect((await slot.findByRole("status")).textContent).toContain("Reading the thread");
+    expect(slot.queryByText("Best next step")).toBeNull();
     expect(calls(slot, "aiQuickReplies")[0]?.input).toEqual({
       threadId: THREAD,
       outcome: "finished",

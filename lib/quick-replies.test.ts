@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   defaultFocus,
   rowFor,
+  similarReplies,
   editDistance,
   FALLBACK_FOLLOW_UPS,
   labelFor,
@@ -294,10 +295,10 @@ describe("rowFor", () => {
     dismissed: new Set<string>(),
   };
 
-  it("shows the usual chips while the model reads, with the card loading", () => {
+  it("shows the usual chips while the model reads, with no empty card", () => {
     const row = rowFor({ ...base, state: "finished", ai: { status: "pending", replies: [] } });
     expect(row.mode).toBe("loading");
-    expect(row.spotlight).toBe(true);
+    expect(row.spotlight).toBe(false);
     expect(row.items.map((item) => item.label)).toEqual(["Commit and push", "Run the tests", "Status"]);
   });
 
@@ -359,5 +360,58 @@ describe("rowFor", () => {
 
   it("hides while the agent waits on an answer", () => {
     expect(rowFor({ ...base, state: "waiting" }).mode).toBe("hidden");
+  });
+});
+
+describe("similarReplies", () => {
+  it("treats two phrasings of one request as the same", () => {
+    expect(similarReplies("use ask mode", "Use ask mode in bb")).toBe(true);
+    expect(similarReplies("run the tests", "run all the tests")).toBe(true);
+    expect(similarReplies("open the PR now", "open the PR")).toBe(true);
+  });
+
+  it("keeps different requests apart, and one word is never enough", () => {
+    expect(similarReplies("fix it", "fix all")).toBe(false);
+    expect(similarReplies("commit", "commit and push")).toBe(false);
+    expect(similarReplies("throw an error", "return a result")).toBe(false);
+    expect(similarReplies("all done?", "use ask mode")).toBe(false);
+  });
+
+  it("folds learned phrasings of one request into the one typed most", () => {
+    const learned = learnQuickReplies([
+      ...typed("use ask mode in bb", 9),
+      ...typed("use ask mode", 4),
+      ...typed("all done?", 5),
+    ]);
+    expect(learned.map((reply) => [reply.text, reply.count])).toEqual([
+      ["use ask mode in bb", 13],
+      ["all done?", 5],
+    ]);
+  });
+
+  it("shows one chip per idea in the row", () => {
+    const row = rowFor({
+      state: "running",
+      config: { afterStop: [], afterDone: [], anyTime: [{ label: "Status", text: "status" }] },
+      learned: [
+        { label: "Continue", text: "continue" },
+        { label: "Use ask mode in bb", text: "use ask mode in bb" },
+        { label: "All done?", text: "all done?" },
+        { label: "Use ask mode", text: "use ask mode" },
+        { label: "Commit and push", text: "commit and push" },
+      ],
+      snippets: [],
+      ai: { status: "idle", replies: [] },
+      draft: "",
+      dismissed: new Set(),
+    });
+    // The repeat drops before the row counts its four, so the next habit fills in.
+    expect(row.items.map((item) => item.label)).toEqual([
+      "Continue",
+      "Use ask mode in bb",
+      "All done?",
+      "Commit and push",
+      "Status",
+    ]);
   });
 });
