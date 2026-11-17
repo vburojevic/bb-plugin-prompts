@@ -364,6 +364,48 @@ describe("QuickReplies, with AI", () => {
     );
   });
 
+  it("opens no sheet when the finger drifts or the row scrolls during a press", async () => {
+    const { slot } = render({ compact: true, ai: { status: "ready", replies: AI_REPLIES } });
+    const best = await slot.findByRole("button", { name: BEST });
+    fireEvent.pointerDown(best, { pointerType: "touch", clientX: 40, clientY: 20 });
+    fireEvent.pointerMove(best, { pointerType: "touch", clientX: 70, clientY: 22 });
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    expect(details()).toBeNull();
+    fireEvent.pointerUp(best, { pointerType: "touch" });
+    fireEvent.pointerDown(best, { pointerType: "touch", clientX: 40, clientY: 20 });
+    fireEvent.scroll(slot.getByRole("toolbar"));
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    expect(details()).toBeNull();
+    fireEvent.pointerUp(best, { pointerType: "touch" });
+    // A still finger, or one that shakes a few pixels, still opens it.
+    fireEvent.pointerDown(best, { pointerType: "touch", clientX: 40, clientY: 20 });
+    fireEvent.pointerMove(best, { pointerType: "touch", clientX: 44, clientY: 23 });
+    await findDetails();
+  });
+
+  it("keeps a long press from selecting text across bb", async () => {
+    const { slot } = render({ compact: true, ai: { status: "ready", replies: AI_REPLIES } });
+    const best = await slot.findByRole("button", { name: BEST });
+    const row = best.closest("[data-quick-replies]")!;
+    expect(row.className).toContain("select-none");
+    expect(row.className).toContain("[-webkit-touch-callout:none]");
+    // Some text on the page was selected when the press began.
+    const text = document.createElement("p");
+    text.textContent = "the conversation";
+    document.body.appendChild(text);
+    try {
+      window.getSelection()!.selectAllChildren(text);
+      fireEvent.pointerDown(best, { pointerType: "touch", clientX: 40, clientY: 20 });
+      await findDetails();
+      expect(window.getSelection()!.toString()).toBe("");
+      // Nor in the sheet that slides up under the finger.
+      expect(details()!.className).toContain("select-none");
+      expect(details()!.className).toContain("[-webkit-touch-callout:none]");
+    } finally {
+      text.remove();
+    }
+  });
+
   it("ignores the lift of the long press that opened the phone sheet", async () => {
     const { slot } = render({ compact: true, ai: { status: "ready", replies: AI_REPLIES } });
     const best = await slot.findByRole("button", { name: BEST });

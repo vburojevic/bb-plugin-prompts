@@ -349,7 +349,10 @@ function isKeyboardFocus(element: HTMLElement): boolean {
     return true;
   }
 }
-const LONG_PRESS_MS = 420;
+/** A long press, as the phone's own: half a second, and it gives way to any scroll. */
+const LONG_PRESS_MS = 500;
+/** How far a finger may drift during a long press before it counts as a scroll. */
+const PRESS_SLOP_PX = 10;
 /** After a long press lifts, the details still ignore taps this long: the lift's own tap lands after it. */
 const LIFT_GRACE_MS = 400;
 
@@ -613,6 +616,7 @@ export function QuickReplies() {
   // Long-press on touch: show what a chip sends without sending it.
   const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pressed = useRef(false);
+  const pressStart = useRef<{ x: number; y: number } | null>(null);
   const clearPress = () => {
     if (pressTimer.current !== null) clearTimeout(pressTimer.current);
     pressTimer.current = null;
@@ -684,7 +688,9 @@ export function QuickReplies() {
       // First in the composer's banner stack, above every other plugin's:
       // bb lays the banners out as one grid and wraps each in a
       // display:contents element, so this root is the grid item `order` moves.
-      className="group/qr order-first mb-2 flex flex-col gap-1.5"
+      // A long press here is ours: no text selection spreading across bb, no
+      // phone press menu.
+      className="group/qr order-first mb-2 flex select-none flex-col gap-1.5 [-webkit-touch-callout:none]"
       data-quick-replies={row.mode}
       onKeyDown={backToComposer}
       onFocus={(event) => {
@@ -728,6 +734,9 @@ export function QuickReplies() {
           role="toolbar"
           aria-label="Quick replies"
           onKeyDown={moveFocus}
+          // Scrolling the chips sideways is never a long press, even where the
+          // browser does not cancel the touch.
+          onScroll={clearPress}
           // Bleeds to the composer's edges on a phone so the row can scroll the
           // full width; the scrollbar is hidden, the faded edge says "more".
           className={cn(
@@ -801,11 +810,20 @@ export function QuickReplies() {
                   if (event.pointerType !== "touch") return;
                   pressed.current = false;
                   clearPress();
+                  pressStart.current = { x: event.clientX, y: event.clientY };
                   pressTimer.current = setTimeout(() => {
                     pressed.current = true;
+                    // A selection the press began anyway, outside the row, goes.
+                    window.getSelection()?.removeAllRanges();
                     holdUntilLift();
                     showPreview(index, "press", 0);
                   }, LONG_PRESS_MS);
+                }}
+                onPointerMove={(event) => {
+                  // A finger that drifts is scrolling, not pressing.
+                  const start = pressStart.current;
+                  if (pressTimer.current === null || start === null) return;
+                  if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > PRESS_SLOP_PX) clearPress();
                 }}
                 onPointerUp={clearPress}
                 onPointerCancel={clearPress}
@@ -998,7 +1016,9 @@ function ChipDetails({
   const button =
     "flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap transition-colors duration-150 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50";
   return (
-    <div data-quick-reply-details className="flex flex-col">
+    // The sheet slides up under the finger that long-pressed: nothing in it
+    // may start a text selection or the phone's press menu either.
+    <div data-quick-reply-details className="flex select-none flex-col [-webkit-touch-callout:none]">
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
         {icon ? <Icon name={icon} className="size-3.5 shrink-0" aria-hidden /> : null}
         <span className="font-medium text-foreground">{eyebrow}</span>
