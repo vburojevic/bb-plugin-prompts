@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { QuickReplies } from "./quick-replies";
 
@@ -409,6 +409,28 @@ describe("QuickReplies, with AI", () => {
     usual.focus();
     expect(await slot.findByText("Best next step", {}, { timeout: 4_000 })).toBeTruthy();
     expect(document.activeElement?.closest('[role="toolbar"]')).not.toBeNull();
+  });
+
+  it("leaves focus alone once the user clicked away from the row and started typing", async () => {
+    const { slot } = render({ settings: { quickRepliesAi: "off" } });
+    await slot.findByText("Write the docs");
+    // Stands in for bb's composer editor, outside the plugin's row.
+    const editor = document.createElement("textarea");
+    document.body.appendChild(editor);
+    try {
+      await act(async () => chips(slot)[0]!.focus());
+      // A click on the conversation's text: blur with no new focus.
+      await act(async () => (document.activeElement as HTMLElement).blur());
+      await act(async () => editor.focus());
+      // Typing turns the row into the filter row; the caret must stay put.
+      await slot.setComposerText("wri");
+      await waitFor(() =>
+        expect(slot.container.querySelector("[data-quick-replies]")?.getAttribute("data-quick-replies")).toBe("filter"),
+      );
+      expect(document.activeElement).toBe(editor);
+    } finally {
+      editor.remove();
+    }
   });
 
   it("keeps regenerate focusable while it asks again", async () => {

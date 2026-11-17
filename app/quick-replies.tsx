@@ -299,6 +299,16 @@ function useAltHeld(): boolean {
 }
 
 const EMPTY_KEYS: ReadonlySet<string> = new Set();
+
+/** Focus that came from the keyboard: the browser shows its ring. */
+function isKeyboardFocus(element: HTMLElement): boolean {
+  try {
+    return element.matches(":focus-visible");
+  } catch {
+    // A browser without :focus-visible: treat focus as keyboard focus.
+    return true;
+  }
+}
 /** How long the model's picks wait after the user last moved or typed in the row. */
 const HOLD_MS = 1_200;
 const LONG_PRESS_MS = 420;
@@ -553,15 +563,21 @@ export function QuickReplies() {
 
   const toolbar = useRef<HTMLDivElement | null>(null);
   const root = useRef<HTMLDivElement | null>(null);
-  const focusInRow = useRef(false);
+  // The element in the row a keyboard user is on. When the chips change and
+  // take it away (the picks landed, a Dismiss), focus moves to the row's
+  // first chip, or the composer, instead of falling to the page. Nothing
+  // moves for a mouse user, or once focus has gone anywhere else.
+  const keyboardFocus = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
-    // The chip that had focus is gone (the picks landed, or it was
-    // dismissed): hand focus to the row's first chip instead of the page.
-    if (!focusInRow.current) return;
+    const lost = keyboardFocus.current;
+    if (lost === null || lost.isConnected) return;
+    keyboardFocus.current = null;
     const active = document.activeElement;
-    if (active && active !== document.body && root.current?.contains(active)) return;
-    toolbar.current?.querySelector<HTMLButtonElement>("[data-chip]")?.focus();
-  }, [rowKey]);
+    if (active && active !== document.body) return;
+    const first = toolbar.current?.querySelector<HTMLButtonElement>("[data-chip]");
+    if (first) first.focus();
+    else composer.focus();
+  });
   const backToComposer = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "Escape") return;
     event.preventDefault();
@@ -594,15 +610,18 @@ export function QuickReplies() {
       }}
       onMouseMove={touchRow}
       onPointerDown={touchRow}
-      onFocus={() => {
-        focusInRow.current = true;
+      onFocus={(event) => {
+        keyboardFocus.current = isKeyboardFocus(event.target) ? event.target : null;
         touchRow();
       }}
       onBlur={(event) => {
-        // Leaving for somewhere else on the page; a removed element blurs
-        // with no target and keeps the row's claim on focus.
-        if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node))
-          focusInRow.current = false;
+        // Focus left for something else, a focusable element or the page
+        // itself (a click on text). An element the chips took away is no
+        // longer connected by the time this runs, and keeps its claim.
+        const left = event.target;
+        queueMicrotask(() => {
+          if (keyboardFocus.current === left && left.isConnected) keyboardFocus.current = null;
+        });
       }}
       onMouseLeave={() => {
         busyUntil.current = 0;
@@ -618,17 +637,7 @@ export function QuickReplies() {
           busy={busy || composer.isSubmitting}
           onRun={(chip) => void run(chip)}
           onEdit={edit}
-          onDismiss={(chip, fromKeyboard) => {
-            dismiss(chip);
-            // The focused Dismiss button goes away with the chip: hand focus
-            // to the next chip, or back to the composer when none is left.
-            if (fromKeyboard)
-              requestAnimationFrame(() => {
-                const next = toolbar.current?.querySelector<HTMLButtonElement>("[data-chip]");
-                if (next) next.focus();
-                else composer.focus();
-              });
-          }}
+          onDismiss={dismiss}
           fills={fillOnly || !composer.isEmpty}
         />
       ) : null}
@@ -777,7 +786,7 @@ function Spotlight({
   busy: boolean;
   onRun(chip: RowItem): void;
   onEdit(chip: RowItem): void;
-  onDismiss(chip: RowItem, fromKeyboard: boolean): void;
+  onDismiss(chip: RowItem): void;
   /** A tap adds to the draft instead of sending (a draft, or the fill setting). */
   fills: boolean;
 }) {
@@ -839,7 +848,7 @@ function Spotlight({
           {chip.kind !== "retry" ? (
             <button
               type="button"
-              onClick={(event) => onDismiss(chip, event.detail === 0)}
+              onClick={() => onDismiss(chip)}
               aria-label={`Dismiss: ${chip.label}`}
               title="Dismiss. Quick replies learn from it"
               className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 max-md:pointer-coarse:size-10"
