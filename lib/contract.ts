@@ -69,6 +69,8 @@ export const aiReplySchema = z.object({
   kind: z.enum(["answer", "ai", "habit", "snippet"]),
   why: z.string(),
   best: z.boolean(),
+  /** Replies cached before topics have none. */
+  topic: z.string().nullable().optional(),
 });
 
 /** Where a queue write lands. Every scope carries its own owner id. */

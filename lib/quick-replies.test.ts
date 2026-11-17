@@ -234,7 +234,7 @@ describe("rowFor without AI", () => {
 
   it("leads with the first after-stop chip after a failure, as a retry", () => {
     const chips = chipsFor("failed");
-    expect(chips.map((chip) => chip.text)).toEqual(["keep going", "Try again", "progress?"]);
+    expect(chips.map((chip) => chip.text)).toEqual(["keep going", "Try again"]);
     expect(chips[0]).toMatchObject({ primary: true, action: "retry" });
     expect(chips[1]).toMatchObject({ primary: false, action: "send" });
   });
@@ -273,8 +273,8 @@ describe("rowFor without AI", () => {
     expect(chips.length).toBeLessThanOrEqual(QUICK_REPLY_FOLLOW_UPS + 1);
   });
 
-  it("shows only any-time chips before any turn", () => {
-    expect(chipsFor("unknown").map((chip) => chip.text)).toEqual(["progress?"]);
+  it("shows nothing before any turn, so no chip flashes while the thread loads", () => {
+    expect(chipsFor("unknown")).toEqual([]);
   });
 
   it("shows nothing while the agent waits on an answer", () => {
@@ -306,19 +306,26 @@ describe("rowFor", () => {
     dismissed: new Set<string>(),
   };
 
-  it("shows the usual chips while the model reads", () => {
-    const row = rowFor({ ...base, state: "finished", ai: { status: "pending", replies: [] } });
-    expect(row.mode).toBe("loading");
+  it("shows nothing older while the model reads, so the picks land together", () => {
+    for (const status of ["pending", "idle"] as const) {
+      const row = rowFor({ ...base, state: "finished", ai: { status, replies: [] } });
+      expect(row).toEqual({ mode: "loading", items: [] });
+    }
+  });
+
+  it("falls back to the usual chips when the model could not answer", () => {
+    const row = rowFor({ ...base, state: "finished", ai: { status: "error", replies: [] } });
+    expect(row.mode).toBe("baseline");
     expect(row.items.map((item) => item.label)).toEqual(["Commit and push", "Run the tests", "Status"]);
   });
 
   it("leads with the model's best pick once it lands", () => {
     const row = rowFor({ ...base, state: "finished", ai: { status: "ready", replies } });
     expect(row.mode).toBe("ai");
+    // The model's picks stand on their own: no any-time chips beside them.
     expect(row.items.map((item) => [item.label, item.best])).toEqual([
       ["Open the PR", true],
       ["Show the diff", false],
-      ["Status", false],
     ]);
     expect(row.items[0]?.best).toBe(true);
   });
@@ -339,14 +346,9 @@ describe("rowFor", () => {
     expect(row.items[0]).toMatchObject({ label: "Show the diff", best: true });
   });
 
-  it("queues habits while the agent works and never asks the model there", () => {
-    const row = rowFor({ ...base, state: "running", ai: { status: "ready", replies } });
-    expect(row.mode).toBe("queue");
-    expect(row.items.map((item) => [item.label, item.action])).toEqual([
-      ["Commit and push", "queue"],
-      ["Run the tests", "queue"],
-      ["Status", "send"],
-    ]);
+  it("stays hidden while the agent works, even with a draft", () => {
+    expect(rowFor({ ...base, state: "running", ai: { status: "ready", replies } })).toEqual({ mode: "hidden", items: [] });
+    expect(rowFor({ ...base, state: "running", draft: "run" }).mode).toBe("hidden");
   });
 
   it("leads a failed turn with a retry", () => {
@@ -447,9 +449,33 @@ describe("similarReplies", () => {
     ]);
   });
 
+  it("gives each chip the topic of what it asks, the model's first", () => {
+    const row = rowFor({
+      state: "finished",
+      config: { afterStop: [], afterDone: [], anyTime: [{ label: "Status", text: "status" }] },
+      learned: [{ label: "Use ask mode in bb", text: "use ask mode in bb" }],
+      snippets: [],
+      ai: {
+        status: "ready",
+        replies: [
+          { kind: "answer", label: "Throw an error", text: "throw a descriptive error", why: "", best: true, topic: "no" },
+          { kind: "ai", label: "Say hi", text: "say hi to the team", why: "", best: false },
+          { kind: "habit", label: "Use ask mode in bb", text: "use ask mode in bb", why: "", best: false },
+        ],
+      },
+      draft: "",
+      dismissed: new Set(),
+    });
+    expect(row.items.map((item) => [item.label, item.topic])).toEqual([
+      ["Throw an error", "no"],
+      ["Say hi", null],
+      ["Use ask mode in bb", "ask"],
+    ]);
+  });
+
   it("keeps another phrasing of a dismissed reply away", () => {
     const row = rowFor({
-      state: "running",
+      state: "finished",
       config: { afterStop: [], afterDone: [], anyTime: [] },
       learned: [
         { label: "Use ask mode in bb", text: "use ask mode in bb" },
@@ -457,7 +483,7 @@ describe("similarReplies", () => {
         { label: "Use ask mode", text: "use ask mode" },
       ],
       snippets: [],
-      ai: { status: "idle", replies: [] },
+      ai: { status: "off", replies: [] },
       draft: "",
       dismissed: new Set(["use ask mode in bb"]),
     });
@@ -485,7 +511,7 @@ describe("similarReplies", () => {
 
   it("shows one chip per idea in the row", () => {
     const row = rowFor({
-      state: "running",
+      state: "finished",
       config: { afterStop: [], afterDone: [], anyTime: [{ label: "Status", text: "status" }] },
       learned: [
         { label: "Continue", text: "continue" },
@@ -495,7 +521,7 @@ describe("similarReplies", () => {
         { label: "Commit and push", text: "commit and push" },
       ],
       snippets: [],
-      ai: { status: "idle", replies: [] },
+      ai: { status: "off", replies: [] },
       draft: "",
       dismissed: new Set(),
     });

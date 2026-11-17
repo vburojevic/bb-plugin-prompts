@@ -32,7 +32,7 @@ let them go when it is ready.
 - **Quick replies**: the next message worth sending, one tap above the
   composer. After a turn, the thread's own provider reads the conversation with
   its fastest model and suggests what to send next, mixed with your usual
-  prompts and snippets when they fit. Continue after a stop, Status any time.
+  prompts and snippets when they fit. Each chip's icon says what it asks for.
 
 ## Install
 
@@ -202,8 +202,19 @@ thread, and your own habits and snippets when they fit.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/quick-replies-ai-dark.png">
-  <img src="assets/screenshots/quick-replies-ai.png" width="100%" alt="The agent asked whether to throw an error or return a result object. Above the composer, a solid chip Return a result object with the shortcut Option 1, then Throw a descriptive error and Status. Hovering the first chip opens a small card with the full message, why it fits, and Dismiss, Edit and Send.">
+  <img src="assets/screenshots/quick-replies-ai.png" width="100%" alt="The agent asked whether to throw an error or return a result object. Above the composer, a solid chip Return a result object with the shortcut Option 1, then Throw a descriptive error, each with an icon for what it asks. Hovering the first chip opens a small card with the full message, why it fits, and Dismiss, Edit and Send.">
 </picture>
+
+**It waits for the good ones.** While the agent works, the row stays out of
+the way. When the turn ends, a quiet *Suggesting replies* line holds its place
+while the model reads, and then the picks land together, one after another.
+Nothing older shows first. If the model cannot answer, your usual chips show
+instead, with a retry.
+
+**Icons say what a chip asks.** Continue plays, Status shows activity, tests
+get a test tube, an error gets a warning sign, a release gets a rocket. The
+model names each of its picks' topics; your own chips get theirs from their
+words.
 
 **Just the chips.** Nothing extra sits above the composer. Hover a chip, or
 reach it with the keyboard, and a small card opens from it with the full
@@ -225,12 +236,13 @@ alike. The row sits first above the composer, over other plugins' banners.
 
 | The thread                       | The row                                              |
 | -------------------------------- | ---------------------------------------------------- |
-| Turn finished                    | Your usual chips at once, then the model's picks     |
-| Turn interrupted                 | **Continue**, then the model's picks                 |
+| Turn finished                    | *Suggesting replies*, then the model's picks         |
+| Turn interrupted                 | **Continue** with the model's picks                  |
 | Turn failed (rate limit, provider error) | **Continue**, which retries the failed turn  |
-| Agent is working                 | Your usual chips queue: they send when the turn ends |
+| Agent is working                 | Nothing                                              |
 | You are typing                   | Chips that complete your draft                       |
 | Agent asked you something        | Nothing: the answer form owns the composer           |
+| Suggestions off, or no answer    | Your usual chips and **Status**                      |
 
 <p align="center">
   <picture>
@@ -247,7 +259,8 @@ answers when it is signed in; otherwise a short-lived hidden bb thread on the
 same provider does, in a scratch workspace that is deleted with it, so it works
 with bb's Account Pooler too. The conversation goes only to the provider the
 thread already uses. Pick other models with `quickRepliesModels`, or switch the
-model off with `quickRepliesAi`; the row then shows your usual chips only.
+model off with `quickRepliesAi`; the row then shows your usual chips right after
+each turn.
 
 **Nothing sends without a tap.** With a draft in the composer a chip joins the
 draft instead, so a half-written prompt never goes out by accident. Set
@@ -374,7 +387,7 @@ for the thread and the project.
 | `quickReplyTap`        | `send`                 | `send` sends on tap, `fill` fills the composer |
 | `quickRepliesAfterStop` | `Continue \| continue` | Chips after a failed or interrupted turn; the first retries a failure |
 | `quickRepliesAfterDone` | empty                 | Chips after a finished turn; empty means learned from history |
-| `quickRepliesAnyTime`  | `Status \| status`     | Chips shown in every state                 |
+| `quickRepliesAnyTime`  | `Status \| status`     | Chips after your usual ones when there are no AI suggestions |
 
 ```sh
 bb plugin config prompts

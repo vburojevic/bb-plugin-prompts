@@ -9,6 +9,7 @@
 // No bb or node imports: the server and the frontend share it.
 
 import { labelFor, replyKey } from "./quick-replies";
+import { isReplyTopic, REPLY_TOPIC_LIST, type ReplyTopic } from "./reply-topics";
 
 /** Where a reply came from; the chip shows a different mark for each. */
 export type AiReplyKind = "answer" | "ai" | "habit" | "snippet";
@@ -23,6 +24,8 @@ export interface AiReply {
   why: string;
   /** The model's single best next step. Exactly one reply has it. */
   best: boolean;
+  /** What it asks for, which picks the chip's icon. */
+  topic: ReplyTopic | null;
 }
 
 /** Replies shown after a finished turn, before the any-time chips. */
@@ -219,11 +222,13 @@ export function buildSuggestPrompt(input: SuggestPromptInput): string {
     "- Every reply asks for something different. Never two that say the same thing in other words, and no habit that repeats a reply you wrote.",
     "- Skip filler: no reply that only thanks or agrees, and no bare \"continue\" unless continuing is clearly the next step.",
     "- Only the latest state counts: an error or question that a later message moved past is settled.",
+    "- Never offer what the user's last message already asked for, or the options of a question they already answered: suggest what comes after it.",
     "- label: 2 to 5 words, sentence case, no final period.",
     "- text: the full message to send, written the way this user writes: short and direct, lowercase is fine, spelled correctly, no greeting, under 240 characters.",
     "- why: one short line on why it fits now, under 90 characters.",
+    `- topic: the one word that names what the reply asks the agent to do, or null when none fits. An answer's topic is what that option does. Pick from: ${REPLY_TOPIC_LIST}.`,
     "",
-    'Reply with JSON only, no prose and no code fence: {"replies":[{"kind":"answer","label":"...","text":"...","why":"...","best":true,"snippet":null}]}',
+    'Reply with JSON only, no prose and no code fence: {"replies":[{"kind":"answer","label":"...","text":"...","why":"...","topic":"test","best":true,"snippet":null}]}',
   ].join("\n");
 }
 
@@ -329,6 +334,7 @@ export function parseSuggestReply(raw: string, context: ParseContext): AiReply[]
       kind,
       why: oneLine(entry.why, WHY_CAP),
       best: entry.best === true,
+      topic: isReplyTopic(entry.topic) ? entry.topic : null,
     });
     if (out.length >= limit) break;
   }
