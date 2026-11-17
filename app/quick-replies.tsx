@@ -48,6 +48,7 @@ import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport
 import { Icon, type IconName } from "@/components/ui/icon";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { Fragment as LookFragment, LookSwitcher, useLook } from "./quick-replies-look.prototype";
 
 /** Event types that say how the latest turn ended. */
 const TURN_EVENT_TYPES = [
@@ -461,6 +462,8 @@ export function QuickReplies() {
   const previewChip = preview !== null ? (row.items[preview] ?? null) : null;
   const compact = useIsCompactViewport();
   const whyId = useId();
+  // PROTOTYPE: the look under review, null for the shipped row.
+  const look = useLook();
   const chipEls = useRef<(HTMLButtonElement | null)[]>([]);
   const anchor = useRef<{ getBoundingClientRect(): DOMRect } | null>(null);
   const previewVia = useRef<"hover" | "focus" | "press">("hover");
@@ -679,7 +682,15 @@ export function QuickReplies() {
       }}
     >
       <style>{ROW_MOTION_CSS}</style>
-      <div className="flex min-w-0 items-center gap-1.5">
+      {look ? <LookSwitcher look={look} /> : null}
+      <div className={cn("flex min-w-0 items-center gap-1.5", look?.bar)}>
+        {look?.label && !loading ? (
+          <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+            <Icon name="Sparkles" className="size-3.5" aria-hidden />
+            Suggested
+            <span aria-hidden className="ml-1 h-3.5 w-px bg-border" />
+          </span>
+        ) : null}
         {loading ? (
           // Holds the row while the model reads the turn: nothing older shows
           // first, and the picks take this place together when they land.
@@ -722,10 +733,13 @@ export function QuickReplies() {
                   ? "Retry the failed turn"
                   : "Send";
             const icon: IconName | null = chip.topic ? TOPIC_ICON[chip.topic] : KIND_ICON[chip.kind];
-            const showHint = index < QUICK_REPLY_SHORTCUTS && (chip.best || altHeld);
+            const showHint = index < QUICK_REPLY_SHORTCUTS && (chip.best || altHeld) && !look?.numbers;
             return (
+              <LookFragment key={`${chip.kind}:${chip.text}`}>
+              {look?.dots && index > 0 ? (
+                <span aria-hidden className="self-center text-muted-foreground/40">·</span>
+              ) : null}
               <button
-                key={`${chip.kind}:${chip.text}`}
                 data-chip
                 type="button"
                 disabled={busy || composer.isSubmitting}
@@ -795,32 +809,51 @@ export function QuickReplies() {
                 // The picks arrive one after another: a short rise out of a soft blur.
                 style={{ animationDelay: `${Math.min(index, 6) * 70}ms` }}
                 className={cn(
-                  "group flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 text-xs",
+                  "group flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap text-xs",
                   "transition-[background-color,color,box-shadow,opacity] duration-150",
                   "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
                   "disabled:pointer-events-none disabled:opacity-50",
                   "animate-in fade-in-0 slide-in-from-bottom-2 zoom-in-95 fill-mode-both duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] [--tw-enter-blur:6px] motion-reduce:animate-none",
                   touchHint,
-                  chip.best
-                    ? "bg-foreground text-background hover:bg-foreground/90"
-                    : chip.primary
-                      ? "border border-primary/40 text-primary hover:bg-primary/10"
-                      : "border border-border text-foreground/85 hover:bg-state-hover hover:text-foreground",
-                  index === preview && !chip.best ? "bg-state-hover text-foreground" : "",
+                  look
+                    ? cn(look.chip, chip.best ? look.best : chip.primary ? look.primary : look.normal, index === preview ? look.open : "")
+                    : cn(
+                        "rounded-full px-2.5",
+                        chip.best
+                          ? "bg-foreground text-background hover:bg-foreground/90"
+                          : chip.primary
+                            ? "border border-primary/40 text-primary hover:bg-primary/10"
+                            : "border border-border text-foreground/85 hover:bg-state-hover hover:text-foreground",
+                        index === preview && !chip.best ? "bg-state-hover text-foreground" : "",
+                      ),
                 )}
               >
-                {retries ? (
+                {look?.numbers && index < QUICK_REPLY_SHORTCUTS ? (
+                  <kbd
+                    aria-hidden
+                    className={cn(
+                      "grid size-[18px] shrink-0 place-items-center rounded-[5px] font-mono text-[10px]",
+                      chip.best ? "bg-state-active text-foreground" : "bg-state-hover text-muted-foreground",
+                    )}
+                  >
+                    {index + 1}
+                  </kbd>
+                ) : retries ? (
                   <Icon name="ArrowReloadHorizontal" className="size-3.5 shrink-0" aria-hidden />
                 ) : icon ? (
                   <Icon
                     name={icon}
-                    className={cn("size-3.5 shrink-0", chip.best ? "opacity-80" : "text-muted-foreground")}
+                    className={cn(
+                      "size-3.5 shrink-0",
+                      look ? (chip.best ? look.iconBest : look.icon) : chip.best ? "opacity-80" : "text-muted-foreground",
+                    )}
                     aria-hidden
                   />
                 ) : null}
                 <span>{shortLabel(chip.label)}</span>
                 {showHint ? <Keycap index={index} /> : null}
               </button>
+              </LookFragment>
             );
           })}
         </div>
