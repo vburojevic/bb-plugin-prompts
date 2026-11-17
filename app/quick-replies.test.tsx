@@ -403,6 +403,23 @@ describe("QuickReplies, with AI", () => {
     );
   });
 
+  it("keeps keyboard focus in the row when the model's picks land", async () => {
+    const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES }, aiDelayMs: 1_400 });
+    const usual = await slot.findByRole("button", { name: "Send: write the docs" });
+    usual.focus();
+    expect(await slot.findByText("Best next step", {}, { timeout: 4_000 })).toBeTruthy();
+    expect(document.activeElement?.closest('[role="toolbar"]')).not.toBeNull();
+  });
+
+  it("keeps regenerate focusable while it asks again", async () => {
+    const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
+    const again = await slot.findByRole("button", { name: "Suggest again" });
+    again.focus();
+    fireEvent.click(again);
+    expect(again.hasAttribute("disabled")).toBe(false);
+    expect(document.activeElement).toBe(again);
+  });
+
   it("keeps the usual chips and offers a retry when the model fails", async () => {
     const { slot } = render({ ai: { status: "error", error: "The model took too long to answer" } });
     const again = await slot.findByRole("button", { name: "Try suggesting again" });

@@ -15,7 +15,7 @@
 //
 // Nothing sends without a tap or its shortcut. With a draft in the composer a
 // chip joins the draft instead, so a half-written prompt is never sent.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   experimental_useSidebarThreads,
   useComposer,
@@ -552,6 +552,16 @@ export function QuickReplies() {
   useEffect(() => clearPress, []);
 
   const toolbar = useRef<HTMLDivElement | null>(null);
+  const root = useRef<HTMLDivElement | null>(null);
+  const focusInRow = useRef(false);
+  useLayoutEffect(() => {
+    // The chip that had focus is gone (the picks landed, or it was
+    // dismissed): hand focus to the row's first chip instead of the page.
+    if (!focusInRow.current) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && root.current?.contains(active)) return;
+    toolbar.current?.querySelector<HTMLButtonElement>("[data-chip]")?.focus();
+  }, [rowKey]);
   const backToComposer = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== "Escape") return;
     event.preventDefault();
@@ -575,6 +585,7 @@ export function QuickReplies() {
 
   return (
     <div
+      ref={root}
       className="mb-2 flex flex-col gap-1.5"
       data-quick-replies={row.mode}
       onKeyDown={(event) => {
@@ -583,7 +594,16 @@ export function QuickReplies() {
       }}
       onMouseMove={touchRow}
       onPointerDown={touchRow}
-      onFocus={touchRow}
+      onFocus={() => {
+        focusInRow.current = true;
+        touchRow();
+      }}
+      onBlur={(event) => {
+        // Leaving for somewhere else on the page; a removed element blurs
+        // with no target and keeps the row's claim on focus.
+        if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node))
+          focusInRow.current = false;
+      }}
       onMouseLeave={() => {
         busyUntil.current = 0;
         rerender((n) => n + 1);
@@ -642,7 +662,7 @@ export function QuickReplies() {
             const showHint = index < QUICK_REPLY_SHORTCUTS && (chip.best || altHeld);
             return (
               <button
-                key={`${row.mode}:${chip.kind}:${chip.text}`}
+                key={`${chip.kind}:${chip.text}`}
                 data-chip
                 type="button"
                 disabled={busy || composer.isSubmitting}
@@ -710,17 +730,19 @@ export function QuickReplies() {
           <button
             type="button"
             onClick={() => {
+              if (loading) return;
               userAsked.current = true;
               ai.refresh();
             }}
-            disabled={loading}
+            // Not `disabled`: a disabled button drops keyboard focus to the page.
+            aria-disabled={loading}
             title={ai.status === "error" && ai.error ? `Could not suggest: ${ai.error}. Try again` : "Suggest again"}
             aria-label={ai.status === "error" ? "Try suggesting again" : "Suggest again"}
             className={cn(
               "grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground",
               "transition-colors duration-150 hover:bg-state-hover hover:text-foreground",
               "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
-              "disabled:pointer-events-none max-md:pointer-coarse:size-10",
+              "aria-disabled:cursor-default max-md:pointer-coarse:size-10",
               ai.status === "error" ? "text-destructive" : "",
             )}
           >
