@@ -583,7 +583,9 @@ export function rowFor(input: RowInput): Row {
         const next = items.find((entry) => entry.kind !== "any" && !entry.primary);
         if (next) next.best = true;
       }
-      return { mode: "ai", items };
+      // Every pick dismissed: the usual chips take over, and with them the
+      // row's way to ask again.
+      if (items.length > 0) return { mode: "ai", items };
     }
     // The picks are on their way (or the read has not started): nothing
     // older shows first, so they arrive together.

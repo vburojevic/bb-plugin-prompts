@@ -683,13 +683,20 @@ export function QuickReplies() {
         {loading ? (
           // Holds the row while the model reads the turn: nothing older shows
           // first, and the picks take this place together when they land.
-          <div
-            role="status"
-            className="flex h-7 min-w-0 flex-1 items-center gap-1.5 pl-1 text-xs animate-in fade-in-0 fill-mode-both duration-700 motion-reduce:animate-none"
-          >
-            <Icon name="Sparkles" className="bb-prompts-qr-breathe size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-            <span className="bb-prompts-qr-shimmer truncate">Suggesting replies</span>
-          </div>
+          // The line shows only once the model is at work; picks already
+          // saved for this turn land in its place without it flashing first.
+          ai.status === "pending" ? (
+            <div
+              role="status"
+              className="flex h-7 min-w-0 flex-1 items-center gap-1.5 pl-1 text-xs animate-in fade-in-0 fill-mode-both duration-500 motion-reduce:animate-none"
+              style={{ animationDelay: "150ms" }}
+            >
+              <Icon name="Sparkles" className="bb-prompts-qr-breathe size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+              <span className="bb-prompts-qr-shimmer truncate">Suggesting replies</span>
+            </div>
+          ) : (
+            <div className="h-7 min-w-0 flex-1" aria-hidden />
+          )
         ) : (
         <div
           ref={toolbar}
@@ -792,7 +799,7 @@ export function QuickReplies() {
                   "transition-[background-color,color,box-shadow,opacity] duration-150",
                   "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
                   "disabled:pointer-events-none disabled:opacity-50",
-                  "animate-in fade-in-0 slide-in-from-bottom-1.5 zoom-in-95 fill-mode-both duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] [--tw-enter-blur:6px] motion-reduce:animate-none",
+                  "animate-in fade-in-0 slide-in-from-bottom-2 zoom-in-95 fill-mode-both duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] [--tw-enter-blur:6px] motion-reduce:animate-none",
                   touchHint,
                   chip.best
                     ? "bg-foreground text-background hover:bg-foreground/90"

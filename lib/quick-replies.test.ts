@@ -336,6 +336,17 @@ describe("rowFor", () => {
     expect(row.items[1]?.best).toBe(true);
   });
 
+  it("falls back to the usual chips once every pick is dismissed", () => {
+    const row = rowFor({
+      ...base,
+      state: "finished",
+      ai: { status: "ready", replies },
+      dismissed: new Set(["open the pr now", "show me the diff"]),
+    });
+    expect(row.mode).toBe("baseline");
+    expect(row.items.map((item) => item.label)).toEqual(["Commit and push", "Run the tests", "Status"]);
+  });
+
   it("passes best to the next pick when the best one is dismissed", () => {
     const row = rowFor({
       ...base,

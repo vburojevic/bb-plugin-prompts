@@ -55,7 +55,7 @@ export function isReplyTopic(value: unknown): value is ReplyTopic {
  */
 const RULES: readonly [ReplyTopic, RegExp][] = [
   // A reply that opens with a no is a no, whatever it names after.
-  ["no", /^(?:no|nope|don'?t|stop|cancel|skip|never ?mind)\b/],
+  ["no", /^(?:no|nope|don'?t|cancel|skip|never ?mind)\b|^stop\W*$/],
   ["ask", /\bask (?:mode|me)\b|\bquestion tool\b|\bclarif(?:y|ying)\b/],
   ["done", /\b(?:all |are you |is it |everything )?(?:done|finished|complete)\s*\?|\ball done\b/],
   ["status", /\b(?:status|progress|eta|where are we|how far|how is it going|update me|what'?s left)\b/],
@@ -74,7 +74,7 @@ const RULES: readonly [ReplyTopic, RegExp][] = [
   ["explain", /\b(?:explain|why|how does|what does|eli5)\b/],
   ["summary", /\b(?:summari[sz]e|summary|recap|tl;?dr)\b/],
   ["plan", /\b(?:plan|todo|steps|break (?:it )?down|roadmap|spec it)\b/],
-  ["visual", /\b(?:screenshots?|show me|ui|design|visual|image|mockup)\b/],
+  ["visual", /\b(?:screenshots?|ui|design|visual|image|mockup)\b/],
   ["docs", /\b(?:docs?|readme|document|changelog|notes|comments?)\b/],
   ["refactor", /\b(?:refactor|simplify|clean ?up|tidy|polish)\b/],
   ["speed", /\b(?:faster|perf|performance|speed|optimi[sz]e|slow)\b/],

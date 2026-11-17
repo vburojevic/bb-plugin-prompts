@@ -116,8 +116,11 @@ it("never shows the last turn's picks while the next turn's read is on its way",
     await new Promise((resolve) => setTimeout(resolve, 50));
   });
   expect(chipTexts(slot).join()).not.toContain("Old turn pick");
-  // A quiet line holds the row until the picks land, nothing older in it.
-  expect(slot.getByRole("status").textContent).toBe("Suggesting replies");
+  // The row holds its place with nothing older in it; the loading line waits
+  // for the server to say the model is at work, so a saved answer never
+  // flashes it.
+  expect(slot.container.querySelector("[data-quick-replies]")?.getAttribute("data-quick-replies")).toBe("loading");
+  expect(slot.queryByRole("status")).toBeNull();
   expect(chipTexts(slot)).toEqual([]);
   expect(await slot.findByText("New turn pick")).toBeTruthy();
 });

@@ -28,6 +28,12 @@ describe("topicOf", () => {
     expect(topicOf(text)).toBe(topic);
   });
 
+  it("reads a stop that names a step as that step, and a bare stop as no", () => {
+    expect(topicOf("stop")).toBe("no");
+    expect(topicOf("stop the dev server and restart it")).not.toBe("no");
+    expect(topicOf("show me the diff")).not.toBe("visual");
+  });
+
   it("names no topic when no rule fits", () => {
     expect(topicOf("return a result object with the reason")).toBeNull();
     expect(topicOf("")).toBeNull();
