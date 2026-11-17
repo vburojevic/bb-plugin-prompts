@@ -202,7 +202,7 @@ thread, and your own habits and snippets when they fit.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/quick-replies-ai-dark.png">
-  <img src="assets/screenshots/quick-replies-ai.png" width="100%" alt="The agent changed parseInvoiceDate and asked whether to open a PR. Above the composer, outline chips, each with an icon for what it asks: Not yet, fix callers first with the shortcut Option 1, then Yes, open the PR, Run the tests first and Show the two broken callers. Hovering the first chip opens a small card with the full message, why it fits, and Dismiss, Edit and Send.">
+  <img src="assets/screenshots/quick-replies-ai.png" width="100%" alt="The agent described a change it had not made. Above the composer, identical outline chips, each with an icon for what it asks: Make the dates.ts change with the shortcut Option 1, then Update the null-expecting callers, Run the tests after the edit and List the callers. Hovering the first chip opens a small card with the full message, why it fits, and Dismiss, Edit and Send.">
 </picture>
 
 **It waits for the good ones.** While the agent works, the row stays out of
@@ -247,7 +247,7 @@ alike. The row sits first above the composer, over other plugins' banners.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/quick-replies-phone-dark.png">
-    <img src="assets/screenshots/quick-replies-phone.png" width="380" alt="On a phone, pressing and holding a chip opens a sheet with the full message, why it fits, a large Send button, Edit and Dismiss.">
+    <img src="assets/screenshots/quick-replies-phone.png" width="380" alt="On a phone, pressing and holding a chip opens a sheet with the full message, why it fits, a large Send button, Edit, Dismiss and Suggest others.">
   </picture>
 </p>
 
