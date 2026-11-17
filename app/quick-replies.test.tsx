@@ -364,6 +364,38 @@ describe("QuickReplies, with AI", () => {
     );
   });
 
+  it("opens no sheet when the finger drifts or the row scrolls during a press", async () => {
+    const { slot } = render({ compact: true, ai: { status: "ready", replies: AI_REPLIES } });
+    const best = await slot.findByRole("button", { name: BEST });
+    fireEvent.pointerDown(best, { pointerType: "touch", clientX: 40, clientY: 20 });
+    fireEvent.pointerMove(best, { pointerType: "touch", clientX: 70, clientY: 22 });
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    expect(details()).toBeNull();
+    fireEvent.pointerUp(best, { pointerType: "touch" });
+    fireEvent.pointerDown(best, { pointerType: "touch", clientX: 40, clientY: 20 });
+    fireEvent.scroll(slot.getByRole("toolbar"));
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    expect(details()).toBeNull();
+    fireEvent.pointerUp(best, { pointerType: "touch" });
+    // A still finger, or one that shakes a few pixels, still opens it.
+    fireEvent.pointerDown(best, { pointerType: "touch", clientX: 40, clientY: 20 });
+    fireEvent.pointerMove(best, { pointerType: "touch", clientX: 44, clientY: 23 });
+    await findDetails();
+  });
+
+  it("keeps a long press from selecting text, in the row and in the sheet", async () => {
+    const { slot } = render({ compact: true, ai: { status: "ready", replies: AI_REPLIES } });
+    const best = await slot.findByRole("button", { name: BEST });
+    const row = best.closest("[data-quick-replies]")!;
+    expect(row.className).toContain("select-none");
+    expect(row.className).toContain("[-webkit-touch-callout:none]");
+    fireEvent.pointerDown(best, { pointerType: "touch", clientX: 40, clientY: 20 });
+    await findDetails();
+    // The sheet slides up under the finger; with a mouse its text stays selectable.
+    expect(details()!.className).toContain("pointer-coarse:select-none");
+    expect(details()!.className).toContain("pointer-coarse:[-webkit-touch-callout:none]");
+  });
+
   it("ignores the lift of the long press that opened the phone sheet", async () => {
     const { slot } = render({ compact: true, ai: { status: "ready", replies: AI_REPLIES } });
     const best = await slot.findByRole("button", { name: BEST });
