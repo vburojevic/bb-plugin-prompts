@@ -63,6 +63,14 @@ export const suggestionSchema = z.object({
   tokens: z.array(z.string()),
 });
 
+export const aiReplySchema = z.object({
+  label: z.string(),
+  text: z.string(),
+  kind: z.enum(["answer", "ai", "habit", "snippet"]),
+  why: z.string(),
+  best: z.boolean(),
+});
+
 /** Where a queue write lands. Every scope carries its own owner id. */
 const scopeRefSchema = z.object({
   scope: scopeSchema,
@@ -298,12 +306,49 @@ export const rpcContract = defineRpcContract({
       lastError: z.string().nullable(),
     }),
   },
-  /** Quick-reply chips learned from local prompt history, most typed first. */
+  /**
+   * What quick replies can offer without a model: the short prompts the user
+   * types most (reordered by their taps and dismissals in this project) and
+   * the project's snippets. Instant; filtering as you type runs on it.
+   */
   quickReplies: {
-    input: z.null(),
+    input: z.object({ projectId: z.string().nullable() }).strict(),
     output: z.object({
       learned: z.array(z.object({ label: z.string(), text: z.string() })),
+      snippets: z.array(z.object({ id: z.string(), label: z.string(), text: z.string() })),
     }),
+  },
+  /**
+   * The model's suggestions for the thread's latest turn. Never waits on the
+   * model: "pending" means a generation is running and the replies arrive as
+   * a `quick-replies` signal for the thread.
+   */
+  aiQuickReplies: {
+    input: z
+      .object({
+        threadId: z.string(),
+        outcome: z.enum(["finished", "interrupted"]),
+        refresh: z.boolean(),
+      })
+      .strict(),
+    output: z.object({
+      status: z.enum(["off", "empty", "pending", "ready", "error"]),
+      turnKey: z.string().nullable(),
+      replies: z.array(aiReplySchema),
+      error: z.string().nullable(),
+      model: z.string().nullable(),
+    }),
+  },
+  /** A tap or a dismissal, so quick replies learn what fits this project. */
+  quickReplyFeedback: {
+    input: z
+      .object({
+        projectId: z.string().nullable(),
+        text: z.string().min(1).max(PROMPT_TEXT_CAP),
+        action: z.enum(["tap", "dismiss"]),
+      })
+      .strict(),
+    output: z.object({ saved: z.boolean() }),
   },
   dismissSuggestion: {
     input: z.object({ key: z.string(), body: z.string() }).strict(),
@@ -333,3 +378,4 @@ export type RpcContract = typeof rpcContract;
 export type PromptDto = z.infer<typeof promptSchema>;
 export type SnippetDto = z.infer<typeof snippetSchema>;
 export type SuggestionDto = z.infer<typeof suggestionSchema>;
+export type AiReplyDto = z.infer<typeof aiReplySchema>;

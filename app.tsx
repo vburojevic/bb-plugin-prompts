@@ -5,8 +5,8 @@
 //   pill, each opening a focused popover.
 // - Composer plus-menu: "Queue current draft" and "Save draft as snippet".
 // - Composer banner: armed/paused state while relevant.
-// - Quick replies: one-tap prompts above a thread's composer, fit to the
-//   thread's state (Continue after a stop, common follow-ups after a finish).
+// - Quick replies: one-tap prompts above a thread's composer. After a turn the
+//   thread's own provider suggests what to send next; Option+1 to 5 sends one.
 // - Thread tab (an action in the side panel): the same view.
 // - Nav panel: the manager, with every queue and the snippet library.
 //
@@ -14,7 +14,7 @@
 import { definePluginApp, useBbContext } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
 import { ArmedBanner, QueueButton, SnippetsButton } from "./app/composer";
-import { QuickReplies } from "./app/quick-replies";
+import { QUICK_REPLY_SHORTCUTS, QuickReplies, runQuickReply } from "./app/quick-replies";
 import { ManagerPanel } from "./app/manager";
 import { QueueView } from "./app/queue-view";
 import {
@@ -120,6 +120,16 @@ export default definePluginApp((app) => {
     scopes: ["thread"],
     banners: [{ id: "quick-replies", chrome: "bare", component: QuickReplies }],
   });
+
+  // Option or Alt plus 1 to 5 sends that quick reply. Rebindable in bb's
+  // keyboard settings; a default that collides with bb's own stays unbound.
+  for (let n = 1; n <= QUICK_REPLY_SHORTCUTS; n += 1)
+    app.composer.experimental_registerCommand({
+      id: `quick-reply-${n}`,
+      title: `Send quick reply ${n}`,
+      defaultShortcut: { key: String(n), alt: true },
+      run: ({ composer }) => runQuickReply(composer, n - 1),
+    });
 
   app.slots.experimental_tab({
     context: { kind: "thread" },

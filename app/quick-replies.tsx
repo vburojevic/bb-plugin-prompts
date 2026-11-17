@@ -1,38 +1,51 @@
-// Quick replies: a row of one-tap prompts above a thread's composer.
+// Quick replies: the next messages worth sending, one tap above the composer.
 //
-// The row follows the thread: after a failed or interrupted turn it leads with
-// Continue, after a finished turn it offers the follow-ups the user types
-// most, and the any-time chips (Status) stay at the end in every state. It
-// hides while the agent waits on an answer, because the answer form owns the
-// composer then.
+// When a turn finishes in the thread on screen, the thread's own provider
+// reads the end of the conversation with its fastest model and suggests what
+// to send next, mixed with the user's habits and snippets when they fit. The
+// row shows the user's usual chips at once and swaps in the model's picks when
+// they land. The best next step leads as a solid chip, and the card above the
+// chips shows exactly what the hovered, focused or long-pressed chip sends and
+// why.
 //
-// Nothing sends without a tap. A tap sends at once (or fills the composer, by
-// setting); with a draft already in the composer the chip joins the draft
-// instead, so a half-written prompt is never sent by accident.
+// Other moments: a failed turn leads with Retry, an interrupted one with
+// Continue; while the agent works, chips queue for the end of the turn; a
+// draft narrows the row to chips that complete it; while the agent waits on
+// an answer the row hides, because the answer form owns the composer.
+//
+// Nothing sends without a tap or its shortcut. With a draft in the composer a
+// chip joins the draft instead, so a half-written prompt is never sent.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  experimental_ShortcutHint as ShortcutHint,
   experimental_useSidebarThreads,
   useComposer,
   useRpc,
   useSdk,
   useSettings,
+  type PluginComposerApi,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
-import type { rpcContract } from "../lib/contract";
+import type { AiReplyDto, rpcContract } from "../lib/contract";
 import {
-  chipsFor,
   DEFAULT_AFTER_STOP,
   DEFAULT_ANY_TIME,
+  defaultFocus,
   parseReplyLines,
   quickReplyState,
+  replyKey,
+  rowFor,
   shortLabel,
   turnOutcomeFromEvents,
-  type Chip,
+  type AiStatus,
   type QuickReply,
+  type QuickReplyState,
+  type RowItem,
+  type RowKind,
   type TurnOutcome,
 } from "../lib/quick-replies";
-import { useComposerThreadId, usePromptSignal } from "./shared";
-import { Icon } from "@/components/ui/icon";
+import { composerThreadIdFromScope, useComposerThreadId, usePromptSignal } from "./shared";
+import { Icon, type IconName } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 
 /** Event types that say how the latest turn ended. */
@@ -41,6 +54,50 @@ const TURN_EVENT_TYPES = [
   "turn/completed",
   "system/thread/interrupted",
 ] as const;
+
+const KIND_ICON: Record<RowKind, IconName | null> = {
+  answer: "Reply",
+  ai: "Sparkles",
+  habit: "History",
+  snippet: "Bookmark",
+  any: null,
+  retry: "ArrowReloadHorizontal",
+};
+
+const KIND_NAME: Record<RowKind, string> = {
+  answer: "Answer",
+  ai: "Suggested",
+  habit: "Your habit",
+  snippet: "Snippet",
+  any: "Your chip",
+  retry: "Retry",
+};
+
+/** Chips the keyboard reaches: Option or Alt plus 1 to this. */
+export const QUICK_REPLY_SHORTCUTS = 5;
+
+// ---------------------------------------------------------------------------
+// Keyboard: bb runs a composer command in the composer holding the caret; the
+// row on screen for that thread registers how to run its chips.
+
+const runners = new Map<string, (index: number) => void>();
+
+/** Run chip `index` of the row above `composer`. */
+export function runQuickReply(composer: PluginComposerApi, index: number): void {
+  const threadId = composerThreadIdFromScope(composer.scope);
+  if (threadId !== null) runners.get(threadId)?.(index);
+}
+
+const IS_MAC =
+  typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
+function shortcutFor(index: number) {
+  const key = String(index + 1);
+  return { ariaKeyshortcuts: `Alt+${key}`, label: IS_MAC ? `⌥${key}` : `Alt+${key}` };
+}
+
+// ---------------------------------------------------------------------------
+// Data.
 
 /**
  * How the thread's latest turn ended. Read from the event log when the
@@ -104,33 +161,130 @@ function useTurnOutcome(threadId: string | null, status: string | null): TurnOut
   return outcome.threadId === threadId ? outcome.value : "none";
 }
 
-/** The learned follow-ups, refreshed when a history scan finishes. */
-function useLearnedReplies(enabled: boolean): QuickReply[] {
+interface Pool {
+  learned: QuickReply[];
+  snippets: QuickReply[];
+}
+
+const EMPTY_POOL: Pool = { learned: [], snippets: [] };
+
+/** Habits and snippets, refreshed when a history scan or the library changes. */
+function useQuickReplyPool(enabled: boolean, projectId: string | null): Pool {
   const rpc = useRpc<typeof rpcContract>();
-  const [learned, setLearned] = useState<QuickReply[]>([]);
+  const [pool, setPool] = useState<Pool>(EMPTY_POOL);
 
   const load = useCallback(() => {
     if (!enabled) return;
     void rpc
-      .call("quickReplies", null)
-      .then((result) => setLearned(result.learned))
+      .call("quickReplies", { projectId })
+      .then((result) => setPool({ learned: result.learned, snippets: result.snippets }))
       .catch(() => {
-        // Fallback chips cover a failed read.
+        // The fallback chips cover a failed read.
       });
-  }, [rpc, enabled]);
+  }, [rpc, enabled, projectId]);
 
   useEffect(load, [load]);
-  usePromptSignal(["suggestions"], null, load);
-  return learned;
+  usePromptSignal(["suggestions", "snippets"], null, load);
+  return pool;
+}
+
+interface AiState {
+  threadId: string | null;
+  status: AiStatus;
+  turnKey: string | null;
+  replies: AiReplyDto[];
+  error: string | null;
+}
+
+const AI_IDLE: AiState = { threadId: null, status: "idle", turnKey: null, replies: [], error: null };
+
+/**
+ * The model's suggestions for the thread's latest turn. Asks when a turn ends
+ * in the thread on screen (or when it opens on a turn with none yet); the
+ * server answers from its cache or starts one generation and announces the
+ * replies over realtime.
+ */
+function useAiReplies(threadId: string | null, state: QuickReplyState) {
+  const rpc = useRpc<typeof rpcContract>();
+  const [read, setRead] = useState<AiState>(AI_IDLE);
+  const outcome = state === "finished" ? "finished" : state === "interrupted" ? "interrupted" : null;
+  const latest = useRef(0);
+
+  const load = useCallback(
+    (refresh: boolean) => {
+      if (threadId === null || outcome === null) return;
+      const mine = ++latest.current;
+      void rpc
+        .call("aiQuickReplies", { threadId, outcome, refresh })
+        .then((result) => {
+          if (latest.current !== mine) return;
+          setRead({
+            threadId,
+            status: result.status,
+            turnKey: result.turnKey,
+            replies: result.replies,
+            error: result.error,
+          });
+        })
+        .catch((error: unknown) => {
+          if (latest.current !== mine) return;
+          setRead({
+            threadId,
+            status: "error",
+            turnKey: null,
+            replies: [],
+            error: error instanceof Error ? error.message : "Could not reach the plugin",
+          });
+        });
+    },
+    [rpc, threadId, outcome],
+  );
+
+  useEffect(() => load(false), [load]);
+  usePromptSignal(
+    ["quick-replies"],
+    threadId === null ? null : { threadId, projectId: null },
+    () => load(false),
+    { debounceMs: 60 },
+  );
+
+  const current = read.threadId === threadId && outcome !== null ? read : AI_IDLE;
+  return { ...current, refresh: useCallback(() => load(true), [load]) };
 }
 
 function settingText(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
 }
 
+/** Whether the Option or Alt key is down: every chip shows its shortcut then. */
+function useAltHeld(): boolean {
+  const [held, setHeld] = useState(false);
+  useEffect(() => {
+    const down = (event: KeyboardEvent) => setHeld(event.altKey);
+    const up = (event: KeyboardEvent) => setHeld(event.altKey);
+    const blur = () => setHeld(false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+    };
+  }, []);
+  return held;
+}
+
+const EMPTY_KEYS: ReadonlySet<string> = new Set();
+const LONG_PRESS_MS = 420;
+
+// ---------------------------------------------------------------------------
+// The row.
+
 export function QuickReplies() {
   const composer = useComposer();
   const sdk = useSdk();
+  const rpc = useRpc<typeof rpcContract>();
   const threadId = useComposerThreadId();
   const settings = useSettings();
   const isLoading = settings.isLoading;
@@ -141,8 +295,10 @@ export function QuickReplies() {
     [threads, threadId],
   );
   const status = thread?.status ?? null;
+  const projectId = thread?.projectId ?? null;
 
   const enabled = !isLoading && values.quickReplies !== false && threadId !== null;
+  const aiOn = values.quickRepliesAi !== "off";
   const config = useMemo(
     () => ({
       afterStop: parseReplyLines(settingText(values.quickRepliesAfterStop, DEFAULT_AFTER_STOP)),
@@ -154,44 +310,121 @@ export function QuickReplies() {
   const fillOnly = values.quickReplyTap === "fill";
 
   const outcome = useTurnOutcome(enabled ? threadId : null, status);
-  const learned = useLearnedReplies(enabled && config.afterDone.length === 0);
   const state = quickReplyState({
     status,
     isRunning: composer.isRunning,
     hasPendingInteraction: thread?.hasPendingInteraction ?? false,
     outcome,
   });
-  const chips = useMemo(() => chipsFor(state, config, learned), [state, config, learned]);
+  const pool = useQuickReplyPool(enabled, projectId);
+  const ai = useAiReplies(enabled && aiOn ? threadId : null, state);
+
+  // Dismissals hide a chip for this turn; the server remembers them for the
+  // project, so the model stops offering them.
+  const [dismissed, setDismissed] = useState<{ turnKey: string | null; keys: Set<string> }>({
+    turnKey: null,
+    keys: new Set(),
+  });
+  const dismissedKeys = dismissed.turnKey === ai.turnKey ? dismissed.keys : EMPTY_KEYS;
+
+  // The model's picks wait while the pointer or focus is on the row, so a
+  // chip never moves out from under a tap that is already on its way.
+  const [interacting, setInteracting] = useState(false);
+  const held = useRef<{ status: AiStatus; replies: AiReplyDto[] }>({ status: ai.status, replies: ai.replies });
+  if (!interacting) held.current = { status: ai.status, replies: ai.replies };
+  const shownAi = held.current;
+
+  const draft = composer.text;
+  const row = useMemo(
+    () =>
+      rowFor({
+        state,
+        config,
+        learned: pool.learned,
+        snippets: pool.snippets,
+        ai: shownAi,
+        draft,
+        dismissed: dismissedKeys,
+      }),
+    [state, config, pool, shownAi, draft, dismissedKeys],
+  );
+
+  // What the card shows: the hovered, focused or long-pressed chip, else the
+  // best one. A new set of chips starts over at the best one.
+  // Focus belongs to one set of chips: a new set reads as unfocused at once,
+  // with no effect in between that could undo a hover landing in that tick.
+  const rowKey = `${row.mode}|${row.items.map((entry) => entry.text).join("\u0000")}`;
+  const rowKeyRef = useRef(rowKey);
+  rowKeyRef.current = rowKey;
+  const [focusState, setFocusState] = useState<{ rowKey: string; index: number | null }>({
+    rowKey,
+    index: null,
+  });
+  const focus = focusState.rowKey === rowKey ? focusState.index : null;
+  const setFocus = useCallback(
+    (index: number | null) => setFocusState({ rowKey: rowKeyRef.current, index }),
+    [],
+  );
+  const shown = focus !== null && focus < row.items.length ? focus : defaultFocus(row.items);
+  const focused = row.items[shown] ?? null;
 
   const [busy, setBusy] = useState(false);
+  const altHeld = useAltHeld();
 
-  const fill = useCallback(
-    (text: string) => {
-      composer.insert(text, { at: "end", block: true });
+  const feedback = useCallback(
+    (text: string, action: "tap" | "dismiss") => {
+      void rpc.call("quickReplyFeedback", { projectId, text, action }).catch(() => {});
+    },
+    [rpc, projectId],
+  );
+
+  const putInComposer = useCallback(
+    (text: string, replaceDraft: boolean) => {
+      if (replaceDraft || composer.isEmpty) composer.replace({ text, mentions: [] });
+      else composer.insert(text, { at: "end", block: true });
       composer.focus();
     },
     [composer],
   );
 
-  const send = useCallback(
-    async (text: string) => {
-      composer.replace({ text, mentions: [] });
-      await composer.submit();
-    },
-    [composer],
-  );
-
   const run = useCallback(
-    async (chip: Chip) => {
+    async (chip: RowItem) => {
       if (busy || threadId === null) return;
+      const learns = chip.kind !== "retry" && chip.kind !== "any";
+      if (chip.action === "complete" || chip.action === "fill") {
+        putInComposer(chip.text, chip.action === "complete");
+        if (learns) feedback(chip.text, "tap");
+        return;
+      }
+      if (chip.action === "queue") {
+        setBusy(true);
+        try {
+          const result = await rpc.call("addPrompt", {
+            scope: "thread",
+            threadId,
+            projectId,
+            text: chip.text,
+            autoSend: true,
+          });
+          if (result.error) throw new Error(result.error);
+          toast.success(`Queued: ${shortLabel(chip.label)}. It sends when this turn ends.`);
+          if (learns) feedback(chip.text, "tap");
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : "Could not queue the quick reply");
+        } finally {
+          setBusy(false);
+        }
+        return;
+      }
       // A draft is the user's writing in progress: join it, never send it.
       if (fillOnly || !composer.isEmpty) {
-        fill(chip.text);
+        putInComposer(chip.text, false);
+        if (learns) feedback(chip.text, "tap");
         return;
       }
       setBusy(true);
       try {
-        if (chip.retry) {
+        if (chip.action === "retry") {
           try {
             await sdk.threads.retry({ threadId, reason: "Quick reply" });
             return;
@@ -200,66 +433,333 @@ export function QuickReplies() {
             // retry plugin, an earlier tap), send the text instead.
           }
         }
-        await send(chip.text);
+        composer.replace({ text: chip.text, mentions: [] });
+        await composer.submit();
+        if (learns) feedback(chip.text, "tap");
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Could not send the quick reply");
       } finally {
         setBusy(false);
       }
     },
-    [busy, threadId, fillOnly, composer, fill, send, sdk],
+    [busy, threadId, projectId, fillOnly, composer, putInComposer, feedback, rpc, sdk],
   );
 
-  if (!enabled || chips.length === 0) return null;
+  const edit = useCallback(
+    (chip: RowItem) => {
+      putInComposer(chip.text, false);
+    },
+    [putInComposer],
+  );
+
+  const dismiss = useCallback(
+    (chip: RowItem) => {
+      const key = replyKey(chip.text);
+      setDismissed((current) => ({
+        turnKey: ai.turnKey,
+        keys: new Set([...(current.turnKey === ai.turnKey ? current.keys : []), key]),
+      }));
+      setFocus(null);
+      if (chip.kind !== "retry") feedback(chip.text, "dismiss");
+    },
+    [ai.turnKey, feedback],
+  );
+
+  // The keyboard shortcuts reach this row's chips through the registry.
+  const rowRef = useRef(row);
+  rowRef.current = row;
+  const runRef = useRef(run);
+  runRef.current = run;
+  useEffect(() => {
+    if (threadId === null) return;
+    const runner = (index: number) => {
+      const chip = rowRef.current.items[index];
+      if (chip && rowRef.current.mode !== "hidden") void runRef.current(chip);
+    };
+    runners.set(threadId, runner);
+    return () => {
+      if (runners.get(threadId) === runner) runners.delete(threadId);
+    };
+  }, [threadId]);
+
+  // Long-press on touch: show what a chip sends without sending it.
+  const pressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pressed = useRef(false);
+  const clearPress = () => {
+    if (pressTimer.current !== null) clearTimeout(pressTimer.current);
+    pressTimer.current = null;
+  };
+  useEffect(() => clearPress, []);
+
+  const toolbar = useRef<HTMLDivElement | null>(null);
+  const moveFocus = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft" && event.key !== "Escape") return;
+    event.preventDefault();
+    if (event.key === "Escape") {
+      composer.focus();
+      return;
+    }
+    const chips = Array.from(toolbar.current?.querySelectorAll<HTMLButtonElement>("[data-chip]") ?? []);
+    const at = chips.indexOf(document.activeElement as HTMLButtonElement);
+    const next = event.key === "ArrowRight" ? at + 1 : at - 1;
+    chips[Math.max(0, Math.min(chips.length - 1, next))]?.focus();
+  };
+
+  if (!enabled || row.mode === "hidden" || row.items.length === 0) return null;
+
+  const canRegenerate =
+    aiOn && (state === "finished" || state === "interrupted") && ai.status !== "off" && ai.status !== "empty";
+  const loading = ai.status === "pending";
+  const touchHint = "max-md:pointer-coarse:h-10 max-md:pointer-coarse:px-3.5 max-md:pointer-coarse:text-sm";
 
   return (
     <div
-      role="toolbar"
-      aria-label="Quick replies"
-      data-quick-replies={state}
-      // Bleeds to the composer's edges on a phone so the row can scroll the
-      // full width; the scrollbar is hidden, the cut-off chip says "more".
-      className="mb-1.5 flex gap-1.5 overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      className="mb-2 flex flex-col gap-1.5"
+      data-quick-replies={row.mode}
+      onMouseEnter={() => setInteracting(true)}
+      onMouseLeave={() => {
+        setInteracting(false);
+        setFocus(null);
+      }}
+      onFocus={() => setInteracting(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setInteracting(false);
+      }}
     >
-      {chips.map((chip) => {
-        const fills = fillOnly || !composer.isEmpty;
-        // A tap that fills the composer does not retry, so it must not say so.
-        const retries = chip.retry && !fills;
-        return (
-        <button
-          key={`${chip.retry ? "retry:" : ""}${chip.text}`}
-          type="button"
-          disabled={busy || composer.isSubmitting}
-          onClick={() => void run(chip)}
-          title={retries ? "Retry the failed turn" : chip.text}
-          aria-label={
-            retries
-              ? `${chip.label}: retry the failed turn`
-              : fills
-                ? `Add to draft: ${chip.text}`
-                : `Send: ${chip.text}`
-          }
+      {row.spotlight ? (
+        <Spotlight
+          chip={loading && row.mode === "loading" ? null : focused}
+          index={shown}
+          mode={row.mode}
+          busy={busy || composer.isSubmitting}
+          onRun={(chip) => void run(chip)}
+          onEdit={edit}
+          onDismiss={dismiss}
+        />
+      ) : null}
+      <div className="flex min-w-0 items-center gap-1.5">
+        <div
+          ref={toolbar}
+          role="toolbar"
+          aria-label="Quick replies"
+          onKeyDown={moveFocus}
+          // Bleeds to the composer's edges on a phone so the row can scroll the
+          // full width; the scrollbar is hidden, the faded edge says "more".
           className={cn(
-            "flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-full border px-2.5 text-xs transition-colors",
-            "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
-            "disabled:pointer-events-none disabled:opacity-50",
-            "max-md:pointer-coarse:h-10 max-md:pointer-coarse:px-3.5 max-md:pointer-coarse:text-sm",
-            chip.primary
-              ? "border-primary/40 text-primary hover:bg-primary/10"
-              : "border-border text-muted-foreground hover:bg-state-hover hover:text-foreground",
+            "-my-1 flex min-w-0 flex-1 gap-1.5 overflow-x-auto overscroll-x-contain py-1 pl-0.5 pr-6",
+            "[scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+            "[mask-image:linear-gradient(90deg,#000_calc(100%-24px),transparent)]",
           )}
         >
-          {retries ? (
+          {row.items.map((chip, index) => {
+            const fills =
+              (chip.action === "send" || chip.action === "retry") && (fillOnly || !composer.isEmpty);
+            const retries = chip.action === "retry" && !fills;
+            const verb =
+              chip.action === "queue"
+                ? "Queue"
+                : chip.action === "complete" || chip.action === "fill" || fills
+                  ? "Add to draft"
+                  : retries
+                    ? "Retry the failed turn"
+                    : "Send";
+            const icon = KIND_ICON[chip.action === "queue" ? "habit" : chip.kind];
+            const showHint = index < QUICK_REPLY_SHORTCUTS && (chip.best || altHeld);
+            return (
+              <button
+                key={`${row.mode}:${chip.kind}:${chip.text}`}
+                data-chip
+                type="button"
+                disabled={busy || composer.isSubmitting}
+                onClick={() => {
+                  if (pressed.current) {
+                    pressed.current = false;
+                    return;
+                  }
+                  void run(chip);
+                }}
+                onMouseEnter={() => setFocus(index)}
+                onFocus={() => setFocus(index)}
+                onPointerDown={(event) => {
+                  if (event.pointerType !== "touch") return;
+                  pressed.current = false;
+                  clearPress();
+                  pressTimer.current = setTimeout(() => {
+                    pressed.current = true;
+                    setFocus(index);
+                  }, LONG_PRESS_MS);
+                }}
+                onPointerUp={clearPress}
+                onPointerCancel={clearPress}
+                onPointerLeave={clearPress}
+                onContextMenu={(event) => {
+                  if (pressed.current) event.preventDefault();
+                }}
+                title={chip.text}
+                aria-label={`${verb}: ${chip.text}`}
+                aria-keyshortcuts={index < QUICK_REPLY_SHORTCUTS ? shortcutFor(index).ariaKeyshortcuts : undefined}
+                style={{ animationDelay: `${Math.min(index, 6) * 55}ms` }}
+                className={cn(
+                  "group flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 text-xs",
+                  "transition-[background-color,color,box-shadow,opacity] duration-150",
+                  "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                  "disabled:pointer-events-none disabled:opacity-50",
+                  "animate-in fade-in-0 slide-in-from-bottom-1 zoom-in-95 fill-mode-both duration-300 ease-out motion-reduce:animate-none",
+                  touchHint,
+                  chip.best
+                    ? "bg-foreground text-background hover:bg-foreground/90"
+                    : chip.primary
+                      ? "border border-primary/40 text-primary hover:bg-primary/10"
+                      : "border border-border text-foreground/85 hover:bg-state-hover hover:text-foreground",
+                  index === shown && row.spotlight && !chip.best ? "bg-state-hover text-foreground" : "",
+                )}
+              >
+                {retries ? (
+                  <Icon name="ArrowReloadHorizontal" className="size-3.5 shrink-0" aria-hidden />
+                ) : icon ? (
+                  <Icon
+                    name={icon}
+                    className={cn("size-3.5 shrink-0", chip.best ? "opacity-80" : "text-muted-foreground")}
+                    aria-hidden
+                  />
+                ) : null}
+                <span>{shortLabel(chip.label)}</span>
+                {showHint ? (
+                  <ShortcutHint
+                    shortcut={shortcutFor(index)}
+                    className={cn("max-md:pointer-coarse:hidden", chip.best ? "text-background/70" : "")}
+                  />
+                ) : null}
+              </button>
+            );
+          })}
+        </div>
+        {canRegenerate ? (
+          <button
+            type="button"
+            onClick={() => ai.refresh()}
+            disabled={loading}
+            title={ai.status === "error" && ai.error ? `Could not suggest: ${ai.error}. Try again` : "Suggest again"}
+            aria-label={ai.status === "error" ? "Try suggesting again" : "Suggest again"}
+            className={cn(
+              "grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground",
+              "transition-colors duration-150 hover:bg-state-hover hover:text-foreground",
+              "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
+              "disabled:pointer-events-none max-md:pointer-coarse:size-10",
+              ai.status === "error" ? "text-destructive" : "",
+            )}
+          >
             <Icon
-              name="ArrowReloadHorizontal"
-              className="size-3.5 shrink-0 max-md:pointer-coarse:size-4"
+              name="RotateCcw"
+              className={cn("size-3.5", loading ? "animate-spin [animation-direction:reverse]" : "")}
               aria-hidden
             />
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The card above the chips.
+
+function Spotlight({
+  chip,
+  index,
+  mode,
+  busy,
+  onRun,
+  onEdit,
+  onDismiss,
+}: {
+  chip: RowItem | null;
+  index: number;
+  mode: string;
+  busy: boolean;
+  onRun(chip: RowItem): void;
+  onEdit(chip: RowItem): void;
+  onDismiss(chip: RowItem): void;
+}) {
+  if (chip === null)
+    return (
+      <div
+        role="status"
+        className="flex h-[60px] items-center gap-2 rounded-xl bg-muted/50 px-3.5 text-[13px] text-muted-foreground animate-in fade-in-0 duration-200 max-md:pointer-coarse:h-[92px] max-md:pointer-coarse:text-sm"
+      >
+        <Icon name="Sparkles" className="size-3.5 shrink-0" aria-hidden />
+        <span className="animate-pulse">Reading the last reply</span>
+      </div>
+    );
+
+  const icon = KIND_ICON[chip.kind];
+  const eyebrow =
+    mode === "filter" && chip.best
+      ? "Completes your draft"
+      : chip.best
+        ? "Best next step"
+        : KIND_NAME[chip.kind];
+  const verb =
+    chip.action === "complete" || chip.action === "fill" ? "Use" : chip.action === "queue" ? "Queue" : "Send";
+  return (
+    <div className="rounded-xl bg-muted/50" aria-live="polite">
+      <div
+        key={`${index}:${chip.text}`}
+        className={cn(
+          "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-2.5 pl-3.5 pr-2.5",
+          "animate-in fade-in-0 duration-200 motion-reduce:animate-none",
+          "max-md:pointer-coarse:grid-cols-1 max-md:pointer-coarse:gap-2.5 max-md:pointer-coarse:p-3.5",
+        )}
+      >
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground max-md:pointer-coarse:text-[13px]">
+            {icon ? <Icon name={icon} className="size-3.5 shrink-0" aria-hidden /> : null}
+            <span className="shrink-0 font-medium text-foreground">{eyebrow}</span>
+            {chip.why ? (
+              <>
+                <span aria-hidden>·</span>
+                <span className="truncate">{chip.why}</span>
+              </>
+            ) : null}
+          </div>
+          <p className="mt-0.5 line-clamp-2 text-[13px] leading-snug text-foreground max-md:pointer-coarse:line-clamp-3 max-md:pointer-coarse:text-[15px]">
+            {chip.text}
+          </p>
+        </div>
+        <div className="flex items-center gap-1 max-md:pointer-coarse:grid max-md:pointer-coarse:grid-cols-[auto_auto_1fr] max-md:pointer-coarse:gap-2">
+          {chip.kind !== "retry" ? (
+            <button
+              type="button"
+              onClick={() => onDismiss(chip)}
+              aria-label={`Dismiss: ${chip.label}`}
+              title="Dismiss. Quick replies learn from it"
+              className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 max-md:pointer-coarse:size-10"
+            >
+              <Icon name="X" className="size-3.5" aria-hidden />
+            </button>
           ) : null}
-          {shortLabel(chip.label)}
-        </button>
-        );
-      })}
+          <button
+            type="button"
+            onClick={() => onEdit(chip)}
+            title="Put it in the composer to change it first"
+            className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-muted-foreground transition-colors duration-150 hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 max-md:pointer-coarse:h-10 max-md:pointer-coarse:px-3 max-md:pointer-coarse:text-sm"
+          >
+            <Icon name="Edit" className="size-3.5" aria-hidden />
+            Edit
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onRun(chip)}
+            className="flex h-7 items-center justify-center gap-2 rounded-lg bg-foreground px-2.5 text-xs font-medium text-background transition-opacity duration-150 hover:opacity-90 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50 max-md:pointer-coarse:h-10 max-md:pointer-coarse:text-sm"
+          >
+            {verb}
+            {index < QUICK_REPLY_SHORTCUTS ? (
+              <ShortcutHint shortcut={shortcutFor(index)} className="text-background/70 max-md:pointer-coarse:hidden" />
+            ) : null}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

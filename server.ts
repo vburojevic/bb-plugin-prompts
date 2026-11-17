@@ -15,8 +15,20 @@
 //
 // A thread ending is not the end of its prompts: they move to the project's
 // queue, so the next session in that project still has the user's writing.
+import { execFile } from "node:child_process";
+import { mkdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import {
+  parseModelOverrides,
+  rankHabits,
+  transcriptFromEvents,
+  type CatalogModel,
+} from "./lib/ai-replies";
+import { createAiReplies, type ModelRequest, type ThreadMeta } from "./lib/ai-service";
 import { rpcContract } from "./lib/contract";
+import { createModelRunner } from "./lib/model-runner";
 import { registerAgentTools } from "./lib/agent-tools";
 import { CLI_COMMANDS, createCliRunner } from "./lib/cli";
 import { toHistoryPrompt, type HistoryEntryLike } from "./lib/history";
@@ -29,7 +41,7 @@ import {
   type ThreadInfo,
 } from "./lib/operations";
 import { errorText } from "./lib/queued-messages";
-import { DEFAULT_AFTER_STOP, DEFAULT_ANY_TIME } from "./lib/quick-replies";
+import { DEFAULT_AFTER_STOP, DEFAULT_ANY_TIME, labelFor } from "./lib/quick-replies";
 import { createStore, MIGRATIONS, type ScopeRef } from "./lib/store";
 import type { HistoryPrompt } from "./lib/suggest";
 import { parseTokens } from "./lib/template";
@@ -37,6 +49,8 @@ import { parseTokens } from "./lib/template";
 export { rpcContract } from "./lib/contract";
 
 const REALTIME_CHANNEL = "prompts";
+/** Where hidden quick-reply helper threads run: an empty folder, not a checkout. */
+const HELPER_DIR = join(tmpdir(), "bb-prompts-quick-replies");
 const DEFAULT_IDLE_DELAY_SECONDS = 20;
 /** Prompt-history entries pulled per project/thread when mining for suggestions. */
 const HISTORY_LIMIT = 500;
@@ -91,6 +105,22 @@ export default function plugin(bb: BbPluginApi) {
         "A row of one-tap prompts above a thread's composer that fits the thread's state.",
       default: true,
     },
+    quickRepliesAi: {
+      type: "select",
+      label: "Suggest quick replies with AI",
+      description:
+        "When a turn finishes in a thread you have open, the thread's own provider reads the end of the conversation with its fastest model (Haiku 5.5 on Claude Code) and suggests what to send next, mixed with your usual prompts and snippets when they fit. Off shows your usual chips only. Threads you never open never call a model.",
+      options: ["on", "off"],
+      default: "on",
+    },
+    quickRepliesModels: {
+      type: "string",
+      label: "Model for AI quick replies",
+      description:
+        "One per line: provider = model, for example claude-code = claude-haiku-5-5. Leave empty to use each provider's fastest model.",
+      experimental_multiline: true,
+      default: "",
+    },
     quickReplyTap: {
       type: "select",
       label: "Tapping a quick reply",
@@ -132,11 +162,16 @@ export default function plugin(bb: BbPluginApi) {
   let idleDelayMs = DEFAULT_IDLE_DELAY_SECONDS * 1_000;
   let threadEndMode: "promote" | "delete" = "promote";
   let mineHistory = true;
+  let aiReplies = true;
+  let modelOverrides = new Map<string, string>();
 
   function applySettings(values: {
     autoSendDelaySeconds?: string;
     threadEnd?: string;
     mineHistory?: string;
+    quickReplies?: boolean;
+    quickRepliesAi?: string;
+    quickRepliesModels?: string;
   }): void {
     const seconds = Number(values.autoSendDelaySeconds);
     // `Number("") === 0`, and "0 seconds" is a legitimate choice — only a
@@ -147,6 +182,8 @@ export default function plugin(bb: BbPluginApi) {
         : DEFAULT_IDLE_DELAY_SECONDS * 1_000;
     threadEndMode = values.threadEnd === "delete" ? "delete" : "promote";
     mineHistory = values.mineHistory !== "off";
+    aiReplies = values.quickReplies !== false && values.quickRepliesAi !== "off";
+    modelOverrides = parseModelOverrides(values.quickRepliesModels);
   }
 
   void settings
@@ -321,6 +358,181 @@ export default function plugin(bb: BbPluginApi) {
       }),
     isDisposed: () => disposed,
     isEnabled: () => mineHistory,
+  });
+
+  // ---- AI quick replies ----
+  //
+  // Hidden child threads answer when they go idle (or fail); the runner waits
+  // on these. Polling backs the events up, since a child can finish before
+  // its waiter is registered.
+  const childWaiters = new Map<string, { done(error: Error | null): void }>();
+
+  async function lastAgentText(threadId: string): Promise<string> {
+    const rows = await bb.sdk.threads.events.list({
+      threadId,
+      order: "desc",
+      limit: "20",
+      types: ["item/completed"],
+    });
+    for (const row of rows as unknown as { data?: { item?: { type?: string; text?: string } } }[]) {
+      const item = row.data?.item;
+      if (item?.type === "agentMessage" && typeof item.text === "string" && item.text.trim())
+        return item.text;
+    }
+    return "";
+  }
+
+  async function runHidden(request: ModelRequest, signal: AbortSignal): Promise<string> {
+    const { thread } = request;
+    if (thread.projectId === null)
+      throw new Error("This thread has no project a helper thread could run in");
+    // An empty folder of its own, never the user's checkout: the helper only
+    // reads the prompt, and a small model that reaches for a tool anyway finds
+    // nothing to change.
+    await mkdir(HELPER_DIR, { recursive: true });
+    const child = await bb.sdk.threads.spawn({
+      projectId: thread.projectId,
+      environment: { type: "host", workspace: { type: "unmanaged", path: HELPER_DIR } },
+      providerId: request.providerId,
+      ...(request.model ? { model: request.model } : {}),
+      ...(request.reasoningLevel ? { reasoningLevel: request.reasoningLevel } : {}),
+      // Not parented: a child reports to its parent, which would put the
+      // suggestions into the conversation they are about.
+      visibility: "hidden",
+      title: "Quick replies",
+      prompt: request.prompt,
+    });
+    const childId = child.id;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (error: Error | null) => {
+          if (settled) return;
+          settled = true;
+          clearInterval(poll);
+          childWaiters.delete(childId);
+          signal.removeEventListener("abort", onAbort);
+          if (error) reject(error);
+          else resolve();
+        };
+        const onAbort = () => finish(new Error("aborted"));
+        signal.addEventListener("abort", onAbort);
+        childWaiters.set(childId, { done: finish });
+        const poll = setInterval(() => {
+          void bb.sdk.threads
+            .get({ threadId: childId })
+            .then((row) => {
+              const status = (row as { status?: string }).status;
+              if (status === "idle") finish(null);
+              else if (status === "error") finish(new Error("The helper thread failed"));
+            })
+            .catch(() => {});
+        }, 1_500);
+      });
+      return await lastAgentText(childId);
+    } finally {
+      void (async () => {
+        await bb.sdk.threads.stop({ threadId: childId }).catch(() => {});
+        await bb.sdk.threads.delete({ threadId: childId, childThreadsConfirmed: true }).catch(() => {});
+      })();
+    }
+  }
+
+  const runModel = createModelRunner({
+    exec: (commandLine, options) =>
+      new Promise((resolve) => {
+        const shell = process.env.SHELL && /^\/[\w/]+$/.test(process.env.SHELL) ? process.env.SHELL : "/bin/sh";
+        const child = execFile(
+          shell,
+          ["-lc", commandLine],
+          {
+            cwd: options.cwd,
+            env: options.env as NodeJS.ProcessEnv,
+            signal: options.signal,
+            timeout: 110_000,
+            maxBuffer: 4 * 1024 * 1024,
+          },
+          (error, stdout, stderr) => {
+            const code =
+              error && typeof (error as { code?: unknown }).code === "number"
+                ? ((error as { code: number }).code)
+                : error
+                  ? 1
+                  : 0;
+            resolve({ stdout: String(stdout), stderr: String(stderr), code });
+          },
+        );
+        child.stdin?.on("error", () => {});
+        child.stdin?.end(options.input);
+      }),
+    hidden: runHidden,
+    readFile: (path) => readFile(path, "utf8"),
+    removeFile: (path) => rm(path, { force: true }),
+    tmpdir: tmpdir(),
+    env: process.env,
+    log: bb.log,
+  });
+
+  const catalogCache = new Map<string, { at: number; models: CatalogModel[] }>();
+  async function catalogFor(providerId: string): Promise<CatalogModel[] | null> {
+    const cached = catalogCache.get(providerId);
+    if (cached && Date.now() - cached.at < 3_600_000) return cached.models;
+    const result = await bb.sdk.providers.models({ providerId });
+    const models = result.models.map((model) => ({
+      model: model.model,
+      displayName: model.displayName ?? null,
+      description: (model as { description?: string | null }).description ?? null,
+      reasoningLevels: (model.supportedReasoningEfforts ?? []).map(
+        (entry: { reasoningEffort: string }) => entry.reasoningEffort,
+      ),
+    }));
+    catalogCache.set(providerId, { at: Date.now(), models });
+    return models;
+  }
+
+  const ai = createAiReplies({
+    enabled: () => aiReplies,
+    async transcript(threadId) {
+      const rows = await bb.sdk.threads.events.list({
+        threadId,
+        order: "desc",
+        limit: "60",
+        types: ["item/completed"],
+      });
+      return transcriptFromEvents(rows as unknown as { type: string; data?: unknown }[]);
+    },
+    async thread(threadId): Promise<ThreadMeta | null> {
+      const row = (await host.getThread(threadId).catch(() => null)) as
+        | (ThreadInfo & { providerId?: string; environmentId?: string | null })
+        | null;
+      if (!row) return null;
+      return {
+        id: threadId,
+        providerId: row.providerId ?? null,
+        projectId: row.projectId ?? null,
+        environmentId: row.environmentId ?? null,
+        title: row.title ?? row.titleFallback ?? null,
+      };
+    },
+    async habits() {
+      const { learned } = await miner.readQuickReplies();
+      return learned.map((reply) => ({ text: reply.text, count: reply.count }));
+    },
+    snippets: (projectId) =>
+      store
+        .listSnippets("", { projectId, limit: 12 })
+        .snippets.map((snippet) => ({ id: snippet.id, title: snippet.title, body: snippet.body })),
+    feedback: (projectId) => store.replyFeedback(projectId),
+    avoid: (projectId) => store.dismissedReplies(projectId),
+    catalog: catalogFor,
+    overrides: () => modelOverrides,
+    run: runModel,
+    kvGet: (key) => bb.storage.kv.get(key),
+    kvSet: (key, value) => bb.storage.kv.set(key, value as never),
+    publish: (threadId, projectId) =>
+      notify({ topic: "quick-replies", kind: "changed", threadId, projectId }),
+    log: bb.log,
+    isDisposed: () => disposed,
   });
 
   const refOf = (input: {
@@ -547,8 +759,24 @@ export default function plugin(bb: BbPluginApi) {
     suggestSnippets({ refresh }) {
       return miner.read(refresh);
     },
-    quickReplies() {
-      return miner.readQuickReplies();
+    async quickReplies({ projectId }) {
+      const { learned } = await miner.readQuickReplies();
+      const ranked = rankHabits(learned, store.replyFeedback(projectId));
+      return {
+        learned: ranked.map((reply) => ({ label: reply.label, text: reply.text })),
+        snippets: store.listSnippets("", { projectId, limit: 20 }).snippets.map((snippet) => ({
+          id: snippet.id,
+          label: labelFor(snippet.title),
+          text: snippet.body,
+        })),
+      };
+    },
+    aiQuickReplies({ threadId, outcome, refresh }) {
+      return ai.read(threadId, { outcome, refresh });
+    },
+    quickReplyFeedback({ projectId, text, action }) {
+      store.recordReplyFeedback(projectId, text, action);
+      return { saved: true };
     },
     dismissSuggestion({ key, body }) {
       store.dismissSuggestion(key, body);
@@ -647,6 +875,7 @@ export default function plugin(bb: BbPluginApi) {
   }
 
   bb.events.on("thread.idle", ({ thread }) => {
+    childWaiters.get(thread.id)?.done(null);
     if (store.countQueued(thread.id) === 0) return;
     notify({
       topic: "queue",
@@ -686,6 +915,7 @@ export default function plugin(bb: BbPluginApi) {
   // behind a banner promising it will send "when the agent finishes". Hold it
   // explicitly instead: pausing is visible, reversible, and says what happened.
   bb.events.on("thread.failed", ({ thread, error }) => {
+    childWaiters.get(thread.id)?.done(new Error(error ? `The helper thread failed: ${error}` : "The helper thread failed"));
     cancelIdleTimer(thread.id);
     bumpEpoch(thread.id);
     if (!store.nextArmed(thread.id)) return;
@@ -722,6 +952,8 @@ export default function plugin(bb: BbPluginApi) {
     // A mine in flight outlives this context by seconds; the flag stops it
     // from logging or publishing through an API that is already gone.
     disposed = true;
+    ai.dispose();
+    for (const waiter of childWaiters.values()) waiter.done(new Error("aborted"));
     for (const timer of idleTimers.values()) clearTimeout(timer);
     idleTimers.clear();
     threadEpoch.clear();
