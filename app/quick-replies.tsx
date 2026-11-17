@@ -813,8 +813,6 @@ export function QuickReplies() {
                   pressStart.current = { x: event.clientX, y: event.clientY };
                   pressTimer.current = setTimeout(() => {
                     pressed.current = true;
-                    // A selection the press began anyway, outside the row, goes.
-                    window.getSelection()?.removeAllRanges();
                     holdUntilLift();
                     showPreview(index, "press", 0);
                   }, LONG_PRESS_MS);
@@ -1016,9 +1014,13 @@ function ChipDetails({
   const button =
     "flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap transition-colors duration-150 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50";
   return (
-    // The sheet slides up under the finger that long-pressed: nothing in it
-    // may start a text selection or the phone's press menu either.
-    <div data-quick-reply-details className="flex select-none flex-col [-webkit-touch-callout:none]">
+    // On a touch screen the sheet slides up under the finger that
+    // long-pressed: nothing in it may start a text selection or the press
+    // menu. With a mouse the card's text stays selectable.
+    <div
+      data-quick-reply-details
+      className="flex flex-col pointer-coarse:select-none pointer-coarse:[-webkit-touch-callout:none]"
+    >
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
         {icon ? <Icon name={icon} className="size-3.5 shrink-0" aria-hidden /> : null}
         <span className="font-medium text-foreground">{eyebrow}</span>

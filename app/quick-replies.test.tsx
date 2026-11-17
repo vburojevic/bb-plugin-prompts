@@ -383,27 +383,17 @@ describe("QuickReplies, with AI", () => {
     await findDetails();
   });
 
-  it("keeps a long press from selecting text across bb", async () => {
+  it("keeps a long press from selecting text, in the row and in the sheet", async () => {
     const { slot } = render({ compact: true, ai: { status: "ready", replies: AI_REPLIES } });
     const best = await slot.findByRole("button", { name: BEST });
     const row = best.closest("[data-quick-replies]")!;
     expect(row.className).toContain("select-none");
     expect(row.className).toContain("[-webkit-touch-callout:none]");
-    // Some text on the page was selected when the press began.
-    const text = document.createElement("p");
-    text.textContent = "the conversation";
-    document.body.appendChild(text);
-    try {
-      window.getSelection()!.selectAllChildren(text);
-      fireEvent.pointerDown(best, { pointerType: "touch", clientX: 40, clientY: 20 });
-      await findDetails();
-      expect(window.getSelection()!.toString()).toBe("");
-      // Nor in the sheet that slides up under the finger.
-      expect(details()!.className).toContain("select-none");
-      expect(details()!.className).toContain("[-webkit-touch-callout:none]");
-    } finally {
-      text.remove();
-    }
+    fireEvent.pointerDown(best, { pointerType: "touch", clientX: 40, clientY: 20 });
+    await findDetails();
+    // The sheet slides up under the finger; with a mouse its text stays selectable.
+    expect(details()!.className).toContain("pointer-coarse:select-none");
+    expect(details()!.className).toContain("pointer-coarse:[-webkit-touch-callout:none]");
   });
 
   it("ignores the lift of the long press that opened the phone sheet", async () => {
