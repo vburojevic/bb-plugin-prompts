@@ -377,6 +377,54 @@ describe("similarReplies", () => {
     expect(similarReplies("all done?", "use ask mode")).toBe(false);
   });
 
+  it("keeps a second step, a no and a different option apart", () => {
+    expect(similarReplies("review the pr", "review the pr and merge it")).toBe(false);
+    expect(similarReplies("commit and push", "commit and push and open a pr")).toBe(false);
+    expect(similarReplies("run the tests", "run the tests and commit")).toBe(false);
+    expect(similarReplies("merge the pr", "merge the pr and release")).toBe(false);
+    expect(similarReplies("push to main", "don't push to main")).toBe(false);
+    expect(similarReplies("go with option A", "go with option B")).toBe(false);
+    expect(similarReplies("use approach A", "use approach B")).toBe(false);
+  });
+
+  it("keeps every answer to the agent's question, even ones that read alike", () => {
+    const row = rowFor({
+      state: "finished",
+      config: { afterStop: [], afterDone: [], anyTime: [] },
+      learned: [],
+      snippets: [],
+      ai: {
+        status: "ready",
+        replies: [
+          { kind: "answer", label: "Go with option A", text: "go with option A", why: "", best: true },
+          { kind: "answer", label: "Go with option B", text: "go with option B", why: "", best: false },
+          { kind: "answer", label: "Push to main", text: "push to main", why: "", best: false },
+          { kind: "answer", label: "Don't push to main", text: "don't push to main yet", why: "", best: false },
+        ],
+      },
+      draft: "",
+      dismissed: new Set(),
+    });
+    expect(row.items.map((item) => item.label)).toEqual([
+      "Go with option A",
+      "Go with option B",
+      "Push to main",
+      "Don't push to main",
+    ]);
+  });
+
+  it("keeps habits typed often enough even when they extend a shorter one", () => {
+    const learned = learnQuickReplies([
+      ...typed("review the pr", 6),
+      ...typed("review the pr and merge it", 4),
+      ...typed("commit and push", 5),
+      ...typed("commit and push and open a pr", 3),
+    ]);
+    expect(learned.map((reply) => reply.text).sort()).toEqual(
+      ["commit and push", "commit and push and open a pr", "review the pr", "review the pr and merge it"].sort(),
+    );
+  });
+
   it("folds learned phrasings of one request into the one typed most", () => {
     const learned = learnQuickReplies([
       ...typed("use ask mode in bb", 9),

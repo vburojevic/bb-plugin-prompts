@@ -128,30 +128,42 @@ export function editDistance(a: string, b: string, max = 2): number {
   return d[a.length]![b.length]!;
 }
 
-/** Words that do not change what a short prompt asks for. */
+/**
+ * Words that do not change what a short prompt asks for. "and" and "or"
+ * are not here ("review the PR" is not "review the PR and merge it"), and
+ * neither are single letters ("option A" is not "option B").
+ */
 const FILLER_WORDS = new Set(
-  "a an the to in on of for and or it its this that these those please pls now just then also ok okay".split(" "),
+  "an the to in on of for it its this that these those please pls now just then also ok okay".split(" "),
 );
+const NEGATIONS = new Set(["no", "not", "dont", "don", "never", "without", "stop", "skip"]);
 
 function meaningWords(text: string): Set<string> {
   return new Set(
     replyKey(text)
+      .replace(/n't\b/g, " not")
       .split(/[^\p{L}\p{N}_]+/u)
       .filter((word) => word && !FILLER_WORDS.has(word)),
   );
 }
 
+const negated = (words: ReadonlySet<string>) => [...words].some((word) => NEGATIONS.has(word));
+
 /**
  * Do two prompts ask for the same thing? "use ask mode" and "use ask mode
- * in bb" do: every meaningful word of the shorter is in the longer, and it
- * has at least two of them. "fix it" and "fix all" do not; one word is too
- * little to call two prompts the same.
+ * in bb" do: every meaningful word of the shorter is in the longer, which
+ * adds at most one more, and both have at least two. "fix it" and "fix all"
+ * do not (one word is too little), nor do "push to main" and "don't push to
+ * main" (one says no), nor "review the PR" and "review the PR and merge it"
+ * (a second step).
  */
 export function similarReplies(a: string, b: string): boolean {
   const left = meaningWords(a);
   const right = meaningWords(b);
   const [small, large] = left.size <= right.size ? [left, right] : [right, left];
   if (small.size < 2) return replyKey(a) === replyKey(b);
+  if (negated(small) !== negated(large)) return false;
+  if (large.size - small.size > 1) return false;
   for (const word of small) if (!large.has(word)) return false;
   return true;
 }
@@ -432,11 +444,16 @@ function dedupe(items: readonly RowItem[], dismissed: ReadonlySet<string>): RowI
   for (const entry of items) {
     const key = replyKey(entry.text);
     if (!key || dismissed.has(key)) continue;
+    // Answers to the agent's question are its options: never merged, only
+    // an exact repeat drops.
+    const answer = entry.kind === "answer";
     const repeats = out.some(
       (kept) =>
-        similarReplies(kept.text, entry.text) ||
-        similarReplies(kept.label, entry.label) ||
-        replyKey(kept.label) === replyKey(entry.label),
+        replyKey(kept.text) === key ||
+        replyKey(kept.label) === replyKey(entry.label) ||
+        (!answer &&
+          kept.kind !== "answer" &&
+          (similarReplies(kept.text, entry.text) || similarReplies(kept.label, entry.label))),
     );
     if (repeats) continue;
     out.push(entry);
