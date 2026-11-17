@@ -15,7 +15,7 @@
 //
 // Nothing sends without a tap or its shortcut. With a draft in the composer a
 // chip joins the draft instead, so a half-written prompt is never sent.
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   experimental_useSidebarThreads,
   useComposer,
@@ -441,6 +441,7 @@ export function QuickReplies() {
   );
   const previewChip = preview !== null ? (row.items[preview] ?? null) : null;
   const compact = useIsCompactViewport();
+  const whyId = useId();
   const chipEls = useRef<(HTMLButtonElement | null)[]>([]);
   const anchor = useRef<{ getBoundingClientRect(): DOMRect } | null>(null);
   const previewVia = useRef<"hover" | "focus" | "press">("hover");
@@ -512,6 +513,8 @@ export function QuickReplies() {
   const run = useCallback(
     async (chip: RowItem) => {
       if (busy || threadId === null) return;
+      // A card about to open over the row stays closed: the chip is used.
+      hidePreview(0);
       const learns = chip.kind !== "retry" && chip.kind !== "any";
       if (chip.action === "complete" || chip.action === "fill") {
         putInComposer(chip.text, chip.action === "complete");
@@ -564,7 +567,7 @@ export function QuickReplies() {
         setBusy(false);
       }
     },
-    [busy, threadId, projectId, fillOnly, composer, putInComposer, feedback, rpc, sdk],
+    [busy, threadId, projectId, fillOnly, composer, putInComposer, feedback, rpc, sdk, hidePreview],
   );
 
   const edit = useCallback(
@@ -630,7 +633,9 @@ export function QuickReplies() {
     else composer.focus();
   });
   const backToComposer = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "Escape") return;
+    // The first Escape closes a chip's details (the popover takes it), the
+    // next goes back to the composer.
+    if (event.key !== "Escape" || event.defaultPrevented) return;
     event.preventDefault();
     composer.focus();
   };
@@ -726,14 +731,19 @@ export function QuickReplies() {
                 ref={(el) => {
                   chipEls.current[index] = el;
                 }}
-                onMouseEnter={() => {
-                  if (!compact) showPreview(index, "hover", preview === null ? HOVER_OPEN_MS : 0);
+                // A mouse only: a tap on a touch screen enters a chip too.
+                onPointerEnter={(event) => {
+                  if (event.pointerType === "mouse" && !compact)
+                    showPreview(index, "hover", preview === null ? HOVER_OPEN_MS : 0);
                 }}
-                onMouseLeave={() => {
-                  if (!compact && previewVia.current === "hover") hidePreview(HOVER_CLOSE_MS);
+                onPointerLeave={(event) => {
+                  clearPress();
+                  if (event.pointerType === "mouse" && !compact && previewVia.current === "hover")
+                    hidePreview(HOVER_CLOSE_MS);
                 }}
                 onFocus={(event) => {
-                  if (isKeyboardFocus(event.currentTarget)) showPreview(index, "focus", 0);
+                  // On a phone the details are a sheet over the page: not for every chip tabbed past.
+                  if (!compact && isKeyboardFocus(event.currentTarget)) showPreview(index, "focus", 0);
                 }}
                 onBlur={(event) => {
                   const next = event.relatedTarget as Element | null;
@@ -753,6 +763,8 @@ export function QuickReplies() {
                   }
                 }}
                 onPointerDown={(event) => {
+                  // A press is not a hover: details about to open stay closed.
+                  if (openTimer.current !== null) clearPreviewTimers();
                   if (event.pointerType !== "touch") return;
                   pressed.current = false;
                   clearPress();
@@ -763,11 +775,13 @@ export function QuickReplies() {
                 }}
                 onPointerUp={clearPress}
                 onPointerCancel={clearPress}
-                onPointerLeave={clearPress}
                 onContextMenu={(event) => {
                   if (pressed.current) event.preventDefault();
                 }}
                 aria-label={`${verb}: ${chip.text}`}
+                aria-describedby={chip.why ? `${whyId}-${index}` : undefined}
+                // A narrow window has no hover card: the full message as a tooltip.
+                title={compact ? chip.text : undefined}
                 aria-expanded={index === preview}
                 aria-keyshortcuts={index < QUICK_REPLY_SHORTCUTS ? shortcutFor(index).ariaKeyshortcuts : undefined}
                 style={{ animationDelay: `${Math.min(index, 6) * 55}ms` }}
@@ -800,6 +814,15 @@ export function QuickReplies() {
               </button>
             );
           })}
+        </div>
+        <div hidden>
+          {row.items.map((chip, index) =>
+            chip.why ? (
+              <span key={`${chip.kind}:${chip.text}`} id={`${whyId}-${index}`}>
+                {chip.why}
+              </span>
+            ) : null,
+          )}
         </div>
         {loading ? (
           <span
@@ -932,7 +955,7 @@ function ChipDetails({
           : fills
             ? "Add to draft"
             : "Send";
-  const canDismiss = chip.kind !== "retry" && chip.kind !== "any";
+  const canDismiss = chip.kind !== "retry";
   const button =
     "flex items-center justify-center gap-1.5 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50";
   return (

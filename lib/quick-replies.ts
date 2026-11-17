@@ -160,12 +160,16 @@ const negated = (words: ReadonlySet<string>) => [...words].some((word) => NEGATI
 export function similarReplies(a: string, b: string): boolean {
   const left = meaningWords(a);
   const right = meaningWords(b);
+  if (Math.min(left.size, right.size) < 2) return replyKey(a) === replyKey(b);
+  return sameRequest(left, right);
+}
+
+/** similarReplies on meaning words already worked out, both at least two. */
+function sameRequest(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
   const [small, large] = left.size <= right.size ? [left, right] : [right, left];
-  if (small.size < 2) return replyKey(a) === replyKey(b);
-  if (negated(small) !== negated(large)) return false;
   if (large.size - small.size > 1) return false;
   for (const word of small) if (!large.has(word)) return false;
-  return true;
+  return negated(small) === negated(large);
 }
 
 /**
@@ -241,15 +245,44 @@ export function learnQuickReplies(
   }
 
   // Two phrasings of one request ("use ask mode", "use ask mode in bb") are
-  // one habit: the counts join, the spelling typed most stays.
-  const merged: typeof kept = [];
+  // one habit: the counts join, the spelling typed most stays. The same
+  // request has the same meaning words, or one more or one fewer, so each
+  // phrase looks its matches up by those word sets instead of meeting every
+  // kept phrase: that ran for seconds on a long history.
+  const merged: { group: (typeof kept)[number]; words: Set<string> }[] = [];
+  const bySet = new Map<string, number[]>();
+  const byMissingOne = new Map<string, number[]>();
+  const setKey = (words: Iterable<string>) => [...words].sort().join(" ");
+  const add = (index: Map<string, number[]>, key: string, at: number) => {
+    const list = index.get(key);
+    if (list) list.push(at);
+    else index.set(key, [at]);
+  };
   for (const group of kept.sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))) {
-    const home = merged.find((candidate) => similarReplies(candidate.key, group.key));
-    if (home) home.count += group.count;
-    else merged.push(group);
+    const words = meaningWords(group.key);
+    const all = setKey(words);
+    const fewer = words.size > 2 ? [...words].map((word) => setKey([...words].filter((w) => w !== word))) : [];
+    // Under two words only an exact repeat is the same, and keys are unique.
+    let home = -1;
+    if (words.size >= 2)
+      for (const at of [
+        ...(bySet.get(all) ?? []),
+        ...fewer.flatMap((key) => bySet.get(key) ?? []),
+        ...(byMissingOne.get(all) ?? []),
+      ])
+        if ((home === -1 || at < home) && sameRequest(merged[at]!.words, words)) home = at;
+    if (home !== -1) {
+      merged[home]!.group.count += group.count;
+      continue;
+    }
+    const at = merged.push({ group, words }) - 1;
+    if (words.size < 2) continue;
+    add(bySet, all, at);
+    for (const key of fewer) add(byMissingOne, key, at);
   }
 
   return merged
+    .map((entry) => entry.group)
     .filter((group) => group.count >= QUICK_REPLY_MIN_COUNT)
     .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))
     .slice(0, limit)
@@ -434,27 +467,27 @@ function item(
 
 /**
  * One chip per idea, the first one kept: an exact or near repeat ("Use ask
- * mode" after "Use ask mode in bb") and anything dismissed drop out. Labels
- * count too, so two chips never read the same.
+ * mode" after "Use ask mode in bb") and anything dismissed drop out, and so
+ * does a repeat of something dismissed. Two chips never read the same.
  */
 function dedupe(items: readonly RowItem[], dismissed: ReadonlySet<string>): RowItem[] {
   const out: RowItem[] = [];
+  const seen: RowItem[] = [];
   for (const entry of items) {
     const key = replyKey(entry.text);
-    if (!key || dismissed.has(key)) continue;
+    if (!key) continue;
     // Answers to the agent's question are its options: never merged, only
     // an exact repeat drops.
     const answer = entry.kind === "answer";
-    const repeats = out.some(
+    const repeats = seen.some(
       (kept) =>
         replyKey(kept.text) === key ||
         replyKey(kept.label) === replyKey(entry.label) ||
-        (!answer &&
-          kept.kind !== "answer" &&
-          (similarReplies(kept.text, entry.text) || similarReplies(kept.label, entry.label))),
+        (!answer && kept.kind !== "answer" && similarReplies(kept.text, entry.text)),
     );
     if (repeats) continue;
-    out.push(entry);
+    seen.push(entry);
+    if (!dismissed.has(key)) out.push(entry);
   }
   return out;
 }

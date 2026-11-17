@@ -80,6 +80,18 @@ describe("editDistance", () => {
 });
 
 describe("learnQuickReplies", () => {
+  it("learns from a long history of distinct prompts quickly", () => {
+    const words = "fix run add check update test build deploy push merge review open close write read show list make move rename delete parser docs readme tests api login cache server client config ui page modal button color theme".split(" ");
+    let seed = 7;
+    const pick = () => words[(seed = (seed * 16807) % 2147483647) % words.length]!;
+    const history = Array.from({ length: 3000 }, () => ({
+      text: Array.from({ length: 2 + (seed % 4) }, pick).join(" "),
+    }));
+    const started = performance.now();
+    learnQuickReplies(history);
+    expect(performance.now() - started).toBeLessThan(1_500);
+  });
+
   it("ranks the short prompts typed most", () => {
     const learned = learnQuickReplies([
       ...typed("keep going", 40),
@@ -433,6 +445,42 @@ describe("similarReplies", () => {
       ["use ask mode in bb", 13],
       ["all done?", 5],
     ]);
+  });
+
+  it("keeps another phrasing of a dismissed reply away", () => {
+    const row = rowFor({
+      state: "running",
+      config: { afterStop: [], afterDone: [], anyTime: [] },
+      learned: [
+        { label: "Use ask mode in bb", text: "use ask mode in bb" },
+        { label: "Run the tests", text: "run the tests" },
+        { label: "Use ask mode", text: "use ask mode" },
+      ],
+      snippets: [],
+      ai: { status: "idle", replies: [] },
+      draft: "",
+      dismissed: new Set(["use ask mode in bb"]),
+    });
+    expect(row.items.map((item) => item.label)).toEqual(["Run the tests"]);
+  });
+
+  it("keeps two requests whose short labels read alike", () => {
+    const row = rowFor({
+      state: "finished",
+      config: { afterStop: [], afterDone: [], anyTime: [] },
+      learned: [],
+      snippets: [],
+      ai: {
+        status: "ready",
+        replies: [
+          { kind: "ai", label: "Open a PR", text: "open a pr for this branch and request review", why: "", best: true },
+          { kind: "ai", label: "Open a draft PR", text: "open a draft pr so CI runs before review", why: "", best: false },
+        ],
+      },
+      draft: "",
+      dismissed: new Set(),
+    });
+    expect(row.items.map((item) => item.label)).toEqual(["Open a PR", "Open a draft PR"]);
   });
 
   it("shows one chip per idea in the row", () => {
