@@ -43,21 +43,22 @@ function setup(exec: (line: string) => ExecResult) {
 const signal = () => new AbortController().signal;
 
 describe("cliCommand", () => {
-  it("runs Claude Code headless with no tools and no saved session", () => {
-    expect(cliCommand("claude-code", "claude-haiku-5-5", null, "/tmp/out")).toBe(
-      "claude -p --model claude-haiku-5-5 --no-session-persistence --tools '' --strict-mcp-config --setting-sources '' --disable-slash-commands --output-format text",
+  it("runs Claude Code headless with no tools, no saved session, at the chosen effort", () => {
+    expect(cliCommand("claude-code", "claude-haiku-5-5", "medium", "/tmp/out")).toBe(
+      "claude -p --model claude-haiku-5-5 --effort medium --no-session-persistence --tools '' --strict-mcp-config --setting-sources '' --disable-slash-commands --output-format text",
     );
   });
 
-  it("runs Codex ephemeral and read-only at the lightest effort", () => {
-    expect(cliCommand("codex", "gpt-6-luna", "low", "/tmp/out.txt")).toBe(
-      "codex exec --ephemeral --skip-git-repo-check -s read-only --color never -m gpt-6-luna -c 'model_reasoning_effort=\"low\"' -o /tmp/out.txt -",
+  it("runs Codex ephemeral and read-only at the chosen effort", () => {
+    expect(cliCommand("codex", "gpt-6-luna", "medium", "/tmp/out.txt")).toBe(
+      "codex exec --ephemeral --skip-git-repo-check -s read-only --color never -m gpt-6-luna -c 'model_reasoning_effort=\"medium\"' -o /tmp/out.txt -",
     );
   });
 
   it("has no CLI for other providers or unsafe model ids", () => {
     expect(cliCommand("acme", "m", null, "/tmp/out")).toBeNull();
     expect(cliCommand("claude-code", "x; rm -rf ~", null, "/tmp/out")).toBeNull();
+    expect(cliCommand("codex", "gpt-6-luna", "medium'; rm -rf ~", "/tmp/out")).toBeNull();
   });
 
   it("strips an agent session's proxy variables but keeps the CLI's own sign-in", () => {

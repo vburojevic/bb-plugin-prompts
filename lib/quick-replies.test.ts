@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  defaultFocus,
   rowFor,
+  similarReplies,
   editDistance,
   FALLBACK_FOLLOW_UPS,
   labelFor,
@@ -80,6 +80,18 @@ describe("editDistance", () => {
 });
 
 describe("learnQuickReplies", () => {
+  it("learns from a long history of distinct prompts quickly", () => {
+    const words = "fix run add check update test build deploy push merge review open close write read show list make move rename delete parser docs readme tests api login cache server client config ui page modal button color theme".split(" ");
+    let seed = 7;
+    const pick = () => words[(seed = (seed * 16807) % 2147483647) % words.length]!;
+    const history = Array.from({ length: 3000 }, () => ({
+      text: Array.from({ length: 2 + (seed % 4) }, pick).join(" "),
+    }));
+    const started = performance.now();
+    learnQuickReplies(history);
+    expect(performance.now() - started).toBeLessThan(1_500);
+  });
+
   it("ranks the short prompts typed most", () => {
     const learned = learnQuickReplies([
       ...typed("keep going", 40),
@@ -294,10 +306,9 @@ describe("rowFor", () => {
     dismissed: new Set<string>(),
   };
 
-  it("shows the usual chips while the model reads, with the card loading", () => {
+  it("shows the usual chips while the model reads", () => {
     const row = rowFor({ ...base, state: "finished", ai: { status: "pending", replies: [] } });
     expect(row.mode).toBe("loading");
-    expect(row.spotlight).toBe(true);
     expect(row.items.map((item) => item.label)).toEqual(["Commit and push", "Run the tests", "Status"]);
   });
 
@@ -309,13 +320,13 @@ describe("rowFor", () => {
       ["Show the diff", false],
       ["Status", false],
     ]);
-    expect(defaultFocus(row.items)).toBe(0);
+    expect(row.items[0]?.best).toBe(true);
   });
 
   it("keeps Continue first after an interrupt and still offers the model's picks", () => {
     const row = rowFor({ ...base, state: "interrupted", ai: { status: "ready", replies } });
     expect(row.items[0]).toMatchObject({ label: "Continue", primary: true, best: false });
-    expect(defaultFocus(row.items)).toBe(1);
+    expect(row.items[1]?.best).toBe(true);
   });
 
   it("passes best to the next pick when the best one is dismissed", () => {
@@ -359,5 +370,142 @@ describe("rowFor", () => {
 
   it("hides while the agent waits on an answer", () => {
     expect(rowFor({ ...base, state: "waiting" }).mode).toBe("hidden");
+  });
+});
+
+describe("similarReplies", () => {
+  it("treats two phrasings of one request as the same", () => {
+    expect(similarReplies("use ask mode", "Use ask mode in bb")).toBe(true);
+    expect(similarReplies("run the tests", "run all the tests")).toBe(true);
+    expect(similarReplies("open the PR now", "open the PR")).toBe(true);
+  });
+
+  it("keeps different requests apart, and one word is never enough", () => {
+    expect(similarReplies("fix it", "fix all")).toBe(false);
+    expect(similarReplies("commit", "commit and push")).toBe(false);
+    expect(similarReplies("throw an error", "return a result")).toBe(false);
+    expect(similarReplies("all done?", "use ask mode")).toBe(false);
+  });
+
+  it("keeps a second step, a no and a different option apart", () => {
+    expect(similarReplies("review the pr", "review the pr and merge it")).toBe(false);
+    expect(similarReplies("commit and push", "commit and push and open a pr")).toBe(false);
+    expect(similarReplies("run the tests", "run the tests and commit")).toBe(false);
+    expect(similarReplies("merge the pr", "merge the pr and release")).toBe(false);
+    expect(similarReplies("push to main", "don't push to main")).toBe(false);
+    expect(similarReplies("go with option A", "go with option B")).toBe(false);
+    expect(similarReplies("use approach A", "use approach B")).toBe(false);
+  });
+
+  it("keeps every answer to the agent's question, even ones that read alike", () => {
+    const row = rowFor({
+      state: "finished",
+      config: { afterStop: [], afterDone: [], anyTime: [] },
+      learned: [],
+      snippets: [],
+      ai: {
+        status: "ready",
+        replies: [
+          { kind: "answer", label: "Go with option A", text: "go with option A", why: "", best: true },
+          { kind: "answer", label: "Go with option B", text: "go with option B", why: "", best: false },
+          { kind: "answer", label: "Push to main", text: "push to main", why: "", best: false },
+          { kind: "answer", label: "Don't push to main", text: "don't push to main yet", why: "", best: false },
+        ],
+      },
+      draft: "",
+      dismissed: new Set(),
+    });
+    expect(row.items.map((item) => item.label)).toEqual([
+      "Go with option A",
+      "Go with option B",
+      "Push to main",
+      "Don't push to main",
+    ]);
+  });
+
+  it("keeps habits typed often enough even when they extend a shorter one", () => {
+    const learned = learnQuickReplies([
+      ...typed("review the pr", 6),
+      ...typed("review the pr and merge it", 4),
+      ...typed("commit and push", 5),
+      ...typed("commit and push and open a pr", 3),
+    ]);
+    expect(learned.map((reply) => reply.text).sort()).toEqual(
+      ["commit and push", "commit and push and open a pr", "review the pr", "review the pr and merge it"].sort(),
+    );
+  });
+
+  it("folds learned phrasings of one request into the one typed most", () => {
+    const learned = learnQuickReplies([
+      ...typed("use ask mode in bb", 9),
+      ...typed("use ask mode", 4),
+      ...typed("all done?", 5),
+    ]);
+    expect(learned.map((reply) => [reply.text, reply.count])).toEqual([
+      ["use ask mode in bb", 13],
+      ["all done?", 5],
+    ]);
+  });
+
+  it("keeps another phrasing of a dismissed reply away", () => {
+    const row = rowFor({
+      state: "running",
+      config: { afterStop: [], afterDone: [], anyTime: [] },
+      learned: [
+        { label: "Use ask mode in bb", text: "use ask mode in bb" },
+        { label: "Run the tests", text: "run the tests" },
+        { label: "Use ask mode", text: "use ask mode" },
+      ],
+      snippets: [],
+      ai: { status: "idle", replies: [] },
+      draft: "",
+      dismissed: new Set(["use ask mode in bb"]),
+    });
+    expect(row.items.map((item) => item.label)).toEqual(["Run the tests"]);
+  });
+
+  it("keeps two requests whose short labels read alike", () => {
+    const row = rowFor({
+      state: "finished",
+      config: { afterStop: [], afterDone: [], anyTime: [] },
+      learned: [],
+      snippets: [],
+      ai: {
+        status: "ready",
+        replies: [
+          { kind: "ai", label: "Open a PR", text: "open a pr for this branch and request review", why: "", best: true },
+          { kind: "ai", label: "Open a draft PR", text: "open a draft pr so CI runs before review", why: "", best: false },
+        ],
+      },
+      draft: "",
+      dismissed: new Set(),
+    });
+    expect(row.items.map((item) => item.label)).toEqual(["Open a PR", "Open a draft PR"]);
+  });
+
+  it("shows one chip per idea in the row", () => {
+    const row = rowFor({
+      state: "running",
+      config: { afterStop: [], afterDone: [], anyTime: [{ label: "Status", text: "status" }] },
+      learned: [
+        { label: "Continue", text: "continue" },
+        { label: "Use ask mode in bb", text: "use ask mode in bb" },
+        { label: "All done?", text: "all done?" },
+        { label: "Use ask mode", text: "use ask mode" },
+        { label: "Commit and push", text: "commit and push" },
+      ],
+      snippets: [],
+      ai: { status: "idle", replies: [] },
+      draft: "",
+      dismissed: new Set(),
+    });
+    // The repeat drops before the row counts its four, so the next habit fills in.
+    expect(row.items.map((item) => item.label)).toEqual([
+      "Continue",
+      "Use ask mode in bb",
+      "All done?",
+      "Commit and push",
+      "Status",
+    ]);
   });
 });

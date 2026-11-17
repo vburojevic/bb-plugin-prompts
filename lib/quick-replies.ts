@@ -129,6 +129,50 @@ export function editDistance(a: string, b: string, max = 2): number {
 }
 
 /**
+ * Words that do not change what a short prompt asks for. "and" and "or"
+ * are not here ("review the PR" is not "review the PR and merge it"), and
+ * neither are single letters ("option A" is not "option B").
+ */
+const FILLER_WORDS = new Set(
+  "an the to in on of for it its this that these those please pls now just then also ok okay".split(" "),
+);
+const NEGATIONS = new Set(["no", "not", "dont", "don", "never", "without", "stop", "skip"]);
+
+function meaningWords(text: string): Set<string> {
+  return new Set(
+    replyKey(text)
+      .replace(/n't\b/g, " not")
+      .split(/[^\p{L}\p{N}_]+/u)
+      .filter((word) => word && !FILLER_WORDS.has(word)),
+  );
+}
+
+const negated = (words: ReadonlySet<string>) => [...words].some((word) => NEGATIONS.has(word));
+
+/**
+ * Do two prompts ask for the same thing? "use ask mode" and "use ask mode
+ * in bb" do: every meaningful word of the shorter is in the longer, which
+ * adds at most one more, and both have at least two. "fix it" and "fix all"
+ * do not (one word is too little), nor do "push to main" and "don't push to
+ * main" (one says no), nor "review the PR" and "review the PR and merge it"
+ * (a second step).
+ */
+export function similarReplies(a: string, b: string): boolean {
+  const left = meaningWords(a);
+  const right = meaningWords(b);
+  if (Math.min(left.size, right.size) < 2) return replyKey(a) === replyKey(b);
+  return sameRequest(left, right);
+}
+
+/** similarReplies on meaning words already worked out, both at least two. */
+function sameRequest(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  const [small, large] = left.size <= right.size ? [left, right] : [right, left];
+  if (large.size - small.size > 1) return false;
+  for (const word of small) if (!large.has(word)) return false;
+  return negated(small) === negated(large);
+}
+
+/**
  * Is `variant` a typo of `canonical`? One slip (a wrong, missing, extra or
  * swapped letter) in a word long enough that a slip is unlikely to make a
  * different word, and rare next to the spelling it slipped from. Two real
@@ -200,7 +244,45 @@ export function learnQuickReplies(
     if (entry.count >= QUICK_REPLY_MIN_COUNT) absorbers.push(entry);
   }
 
-  return kept
+  // Two phrasings of one request ("use ask mode", "use ask mode in bb") are
+  // one habit: the counts join, the spelling typed most stays. The same
+  // request has the same meaning words, or one more or one fewer, so each
+  // phrase looks its matches up by those word sets instead of meeting every
+  // kept phrase: that ran for seconds on a long history.
+  const merged: { group: (typeof kept)[number]; words: Set<string> }[] = [];
+  const bySet = new Map<string, number[]>();
+  const byMissingOne = new Map<string, number[]>();
+  const setKey = (words: Iterable<string>) => [...words].sort().join(" ");
+  const add = (index: Map<string, number[]>, key: string, at: number) => {
+    const list = index.get(key);
+    if (list) list.push(at);
+    else index.set(key, [at]);
+  };
+  for (const group of kept.sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))) {
+    const words = meaningWords(group.key);
+    const all = setKey(words);
+    const fewer = words.size > 2 ? [...words].map((word) => setKey([...words].filter((w) => w !== word))) : [];
+    // Under two words only an exact repeat is the same, and keys are unique.
+    let home = -1;
+    if (words.size >= 2)
+      for (const at of [
+        ...(bySet.get(all) ?? []),
+        ...fewer.flatMap((key) => bySet.get(key) ?? []),
+        ...(byMissingOne.get(all) ?? []),
+      ])
+        if ((home === -1 || at < home) && sameRequest(merged[at]!.words, words)) home = at;
+    if (home !== -1) {
+      merged[home]!.group.count += group.count;
+      continue;
+    }
+    const at = merged.push({ group, words }) - 1;
+    if (words.size < 2) continue;
+    add(bySet, all, at);
+    for (const key of fewer) add(byMissingOne, key, at);
+  }
+
+  return merged
+    .map((entry) => entry.group)
     .filter((group) => group.count >= QUICK_REPLY_MIN_COUNT)
     .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key))
     .slice(0, limit)
@@ -326,7 +408,8 @@ export interface RowItem {
 /**
  * - `hidden`: the agent asked something; its answer form owns the composer.
  * - `baseline`: the user's usual chips, no model involved.
- * - `loading`: the usual chips while the model reads the thread.
+ * - `loading`: the usual chips while the model reads the thread; a quiet
+ *   "Reading the thread" sits at the row's end until the picks land.
  * - `ai`: the model's picks.
  * - `queue`: the agent is working; chips wait for the turn to end.
  * - `filter`: chips that complete the draft.
@@ -358,8 +441,6 @@ export interface RowInput {
 export interface Row {
   mode: RowMode;
   items: RowItem[];
-  /** Show the card above the chips: what the focused chip sends, and why. */
-  spotlight: boolean;
 }
 
 /** Habits shown while the agent works, before the any-time chips. */
@@ -384,14 +465,29 @@ function item(
   };
 }
 
+/**
+ * One chip per idea, the first one kept: an exact or near repeat ("Use ask
+ * mode" after "Use ask mode in bb") and anything dismissed drop out, and so
+ * does a repeat of something dismissed. Two chips never read the same.
+ */
 function dedupe(items: readonly RowItem[], dismissed: ReadonlySet<string>): RowItem[] {
-  const seen = new Set<string>();
   const out: RowItem[] = [];
+  const seen: RowItem[] = [];
   for (const entry of items) {
     const key = replyKey(entry.text);
-    if (!key || seen.has(key) || dismissed.has(key)) continue;
-    seen.add(key);
-    out.push(entry);
+    if (!key) continue;
+    // Answers to the agent's question are its options: never merged, only
+    // an exact repeat drops.
+    const answer = entry.kind === "answer";
+    const repeats = seen.some(
+      (kept) =>
+        replyKey(kept.text) === key ||
+        replyKey(kept.label) === replyKey(entry.label) ||
+        (!answer && kept.kind !== "answer" && similarReplies(kept.text, entry.text)),
+    );
+    if (repeats) continue;
+    seen.push(entry);
+    if (!dismissed.has(key)) out.push(entry);
   }
   return out;
 }
@@ -401,7 +497,12 @@ function usual(config: QuickReplyConfig, learned: readonly QuickReply[]): RowIte
   const source =
     config.afterDone.length > 0 ? config.afterDone : learned.length > 0 ? learned : FALLBACK_FOLLOW_UPS;
   const kind: RowKind = config.afterDone.length > 0 ? "any" : learned.length > 0 ? "habit" : "any";
-  return source.slice(0, QUICK_REPLY_FOLLOW_UPS).map((reply) => item(reply, kind, "send"));
+  return source.map((reply) => item(reply, kind, "send"));
+}
+
+/** The first `count` distinct chips: repeats drop before counting, so the next one fills in. */
+function take(items: readonly RowItem[], count: number, dismissed: ReadonlySet<string>): RowItem[] {
+  return dedupe(items, dismissed).slice(0, count);
 }
 
 function aiItems(replies: readonly AiReplyLike[]): RowItem[] {
@@ -423,15 +524,16 @@ export function rowFor(input: RowInput): Row {
   const anyTime = config.anyTime.map((reply) => item(reply, "any", "send"));
   const aiReady = ai.status === "ready" && ai.replies.length > 0;
 
-  if (state === "waiting") return { mode: "hidden", items: [], spotlight: false };
+  if (state === "waiting") return { mode: "hidden", items: []};
 
   if (state === "running") {
     // The usual follow-ups, waiting for the turn to end; any-time chips
     // (Status) still send at once.
-    const queued = usual(config, input.learned)
-      .slice(0, QUEUE_CHIPS)
-      .map((entry) => ({ ...entry, action: "queue" as const }));
-    return { mode: "queue", items: dedupe([...queued, ...anyTime], dismissed), spotlight: false };
+    const queued = take(usual(config, input.learned), QUEUE_CHIPS, dismissed).map((entry) => ({
+      ...entry,
+      action: "queue" as const,
+    }));
+    return { mode: "queue", items: dedupe([...queued, ...anyTime], dismissed)};
   }
 
   // A draft narrows the row to chips that complete it.
@@ -457,7 +559,6 @@ export function rowFor(input: RowInput): Row {
           // Completing a draft never sends, so a snippet with fill-ins is safe too.
           action: "complete",
         })),
-        spotlight: true,
       };
   }
 
@@ -465,7 +566,7 @@ export function rowFor(input: RowInput): Row {
     const lead = config.afterStop.map((reply, index) =>
       item(reply, index === 0 ? "retry" : "any", index === 0 ? "retry" : "send", { primary: index === 0 }),
     );
-    return { mode: "stopped", items: dedupe([...lead, ...anyTime], dismissed), spotlight: false };
+    return { mode: "stopped", items: dedupe([...lead, ...anyTime], dismissed)};
   }
 
   if (state === "interrupted" || state === "finished") {
@@ -480,17 +581,14 @@ export function rowFor(input: RowInput): Row {
         const next = items.find((entry) => entry.kind !== "any" && !entry.primary);
         if (next) next.best = true;
       }
-      return { mode: "ai", items, spotlight: items.some((entry) => entry.best) };
+      return { mode: "ai", items};
     }
-    const items = dedupe([...lead, ...(state === "finished" ? usual(config, input.learned) : []), ...anyTime], dismissed);
-    return {
-      mode: ai.status === "pending" ? "loading" : "baseline",
-      items,
-      spotlight: ai.status === "pending",
-    };
+    const follow = state === "finished" ? take(usual(config, input.learned), QUICK_REPLY_FOLLOW_UPS, dismissed) : [];
+    const items = dedupe([...lead, ...follow, ...anyTime], dismissed);
+    return { mode: ai.status === "pending" ? "loading" : "baseline", items };
   }
 
-  return { mode: "baseline", items: dedupe(anyTime, dismissed), spotlight: false };
+  return { mode: "baseline", items: dedupe(anyTime, dismissed)};
 }
 
 function matchItems(items: readonly RowItem[], draft: string): RowItem[] {
@@ -506,10 +604,4 @@ function matchItems(items: readonly RowItem[], draft: string): RowItem[] {
   const word = items.filter((entry) => !prefix.includes(entry) && (starts(entry.label) || starts(entry.text)));
   // A chip that only repeats the draft completes nothing.
   return [...prefix, ...word].filter((entry) => replyKey(entry.text) !== needle);
-}
-
-/** The chip the card shows when nothing is hovered or focused. */
-export function defaultFocus(items: readonly RowItem[]): number {
-  const best = items.findIndex((entry) => entry.best);
-  return best === -1 ? 0 : best;
 }

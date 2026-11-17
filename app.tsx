@@ -38,6 +38,17 @@ function QueuePanel({ threadId }: { threadId: string }) {
 }
 
 export default definePluginApp((app) => {
+  // Quick replies first among this plugin's banners (bb stacks a plugin's
+  // banners in registration order); the row's `order-first` class puts it
+  // above other plugins' banners too. Thread composers only: a new thread
+  // has no turn to follow up on, and a queued-message editor is editing one
+  // message, not sending the next.
+  app.composer.customize({
+    id: "quick-replies",
+    scopes: ["thread"],
+    banners: [{ id: "quick-replies", chrome: "bare", component: QuickReplies }],
+  });
+
   app.composer.customize({
     id: "prompts",
     actions: [
@@ -113,13 +124,6 @@ export default definePluginApp((app) => {
     ],
   });
 
-  // Thread composers only: a new thread has no turn to follow up on, and a
-  // queued-message editor is editing one message, not sending the next.
-  app.composer.customize({
-    id: "quick-replies",
-    scopes: ["thread"],
-    banners: [{ id: "quick-replies", chrome: "bare", component: QuickReplies }],
-  });
 
   // Option or Alt plus 1 to 5 sends that quick reply. Rebindable in bb's
   // keyboard settings; a default that collides with bb's own stays unbound.

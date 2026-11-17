@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
-import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { QuickReplies } from "./quick-replies";
 
@@ -127,6 +127,15 @@ function render(options: {
 type Slot = ReturnType<typeof renderSlot>;
 
 const chips = (slot: Slot) => within(slot.getByRole("toolbar")).getAllByRole("button");
+/** A pointer entering an element, as a browser reports it: the pointer event, then the mouse one (a tap sends both too). */
+const hover = (element: Element, pointerType = "mouse") => {
+  fireEvent.pointerEnter(element, { pointerType });
+  fireEvent.mouseEnter(element);
+};
+const BEST = "Send: fix the date parser first, then rerun the import tests";
+/** The open chip details, if any. */
+const details = () => document.querySelector<HTMLElement>("[data-quick-reply-details]");
+const findDetails = () => waitFor(() => expect(details()).not.toBeNull()).then(() => within(details()!));
 const chipTexts = (slot: Slot) => chips(slot).map((button) => button.textContent);
 const calls = (slot: Slot, method: string) =>
   (slot.inspection.rpcCalls as { method: string; input: unknown }[]).filter(
@@ -201,7 +210,6 @@ describe("QuickReplies, without AI", () => {
       settings: { quickReplyTap: "fill" },
     });
     const chip = await slot.findByRole("button", { name: "Add to draft: keep going" });
-    expect(chip.getAttribute("title")).toBe("keep going");
     fireEvent.click(chip);
     await waitFor(() => expect(slot.inspection.composer.text).toBe("keep going"));
     expect(retryCalls).toHaveLength(0);
@@ -233,7 +241,8 @@ describe("QuickReplies, with AI", () => {
     await waitFor(() =>
       expect(chipTexts(slot)).toEqual(["Write the docs", "Ship the build", "Progress"]),
     );
-    expect((await slot.findByRole("status")).textContent).toContain("Reading the last reply");
+    expect((await slot.findByRole("status")).textContent).toContain("Reading the thread");
+    expect(slot.queryByText("Best next step")).toBeNull();
     expect(calls(slot, "aiQuickReplies")[0]?.input).toEqual({
       threadId: THREAD,
       outcome: "finished",
@@ -241,7 +250,7 @@ describe("QuickReplies, with AI", () => {
     });
   });
 
-  it("leads with the best next step and shows what it sends and why", async () => {
+  it("leads with the best next step and shows nothing more until asked", async () => {
     const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
     await waitFor(() =>
       expect(chipTexts(slot).map((text) => text?.replace(/⌥\d|Alt\+\d/, ""))).toEqual([
@@ -251,11 +260,18 @@ describe("QuickReplies, with AI", () => {
         "Progress",
       ]),
     );
-    expect(slot.container.textContent).toContain("Best next step");
-    expect(slot.container.textContent).toContain(
-      "fix the date parser first, then rerun the import tests",
-    );
-    expect(slot.container.textContent).toContain("Answers the agent's question");
+    expect(chipTexts(slot)[0]).toMatch(/⌥1|Alt\+1/);
+    expect(screen.queryByText("Best next step")).toBeNull();
+    expect(details()).toBeNull();
+  });
+
+  it("opens a chip's details after a short hover: what it sends, and why", async () => {
+    const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
+    hover(await slot.findByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" }));
+    const card = await findDetails();
+    expect(card.getByText("Best next step")).toBeTruthy();
+    expect(card.getByText("fix the date parser first, then rerun the import tests")).toBeTruthy();
+    expect(card.getByText("Answers the agent's question")).toBeTruthy();
   });
 
   it("sends the full prompt, not the label, and learns from the tap", async () => {
@@ -275,20 +291,20 @@ describe("QuickReplies, with AI", () => {
     );
   });
 
-  it("previews the chip under the pointer", async () => {
+  it("shows the details of the chip under the pointer", async () => {
     const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
-    fireEvent.mouseEnter(
+    hover(
       await slot.findByRole("button", { name: "Send: paste the failing input for the date parser" }),
     );
-    await waitFor(() =>
-      expect(slot.container.textContent).toContain("The agent has not shown it"),
-    );
-    expect(slot.container.textContent).toContain("Suggested");
+    const card = await findDetails();
+    expect(card.getByText("The agent has not shown it")).toBeTruthy();
+    expect(card.getByText("Suggested")).toBeTruthy();
   });
 
   it("puts a reply in the composer to edit instead of sending it", async () => {
     const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
-    fireEvent.click(await slot.findByRole("button", { name: "Edit" }));
+    hover(await slot.findByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
     await waitFor(() =>
       expect(slot.inspection.composer.text).toBe(
         "fix the date parser first, then rerun the import tests",
@@ -299,11 +315,12 @@ describe("QuickReplies, with AI", () => {
 
   it("drops a dismissed reply, passes best on and remembers the dismissal", async () => {
     const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
-    fireEvent.click(await slot.findByRole("button", { name: "Dismiss: Fix the parser first" }));
+    hover(await slot.findByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Dismiss: Fix the parser first" }));
     await waitFor(() =>
       expect(chipTexts(slot)[0]?.replace(/⌥\d|Alt\+\d/, "")).toBe("Show the failing case"),
     );
-    expect(slot.container.textContent).toContain("Best next step");
+    expect(chipTexts(slot)[0]).toMatch(/⌥1|Alt\+1/);
     await waitFor(() => expect(calls(slot, "quickReplyFeedback")[0]?.input).toMatchObject({ action: "dismiss" }));
   });
 
@@ -327,7 +344,8 @@ describe("QuickReplies, with AI", () => {
         "Fix all failing tests",
       ]),
     );
-    expect(slot.container.textContent).toContain("Completes your draft");
+    hover(slot.getByRole("button", { name: "Add to draft: fix the date parser first, then rerun the import tests" }));
+    expect(await screen.findByText("Completes your draft")).toBeTruthy();
     fireEvent.click(slot.getByRole("button", { name: "Add to draft: fix all failing tests" }));
     await waitFor(() => expect(slot.inspection.composer.text).toBe("fix all failing tests"));
     expect(slot.inspection.composer.submits).toHaveLength(0);
@@ -335,7 +353,7 @@ describe("QuickReplies, with AI", () => {
 
   it("joins a draft that matches nothing", async () => {
     const { slot } = render({ text: "half a thought", ai: { status: "ready", replies: AI_REPLIES } });
-    await slot.findByText("Best next step");
+    await slot.findByRole("button", { name: "Add to draft: fix the date parser first, then rerun the import tests" });
     fireEvent.click(slot.getByRole("button", { name: "Add to draft: ship the build" }));
     await waitFor(() => expect(slot.inspection.composer.text).toContain("ship the build"));
     expect(slot.inspection.composer.text).toContain("half a thought");
@@ -378,24 +396,72 @@ describe("QuickReplies, with AI", () => {
     const usual = await slot.findByRole("button", { name: "Send: write the docs" });
     fireEvent.mouseMove(usual.closest("[data-quick-replies]")!);
     await new Promise((resolve) => setTimeout(resolve, 150));
-    expect(slot.queryByText("Best next step")).toBeNull();
+    expect(slot.queryByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" })).toBeNull();
     // A resting pointer does not keep them away for long.
-    expect(await slot.findByText("Best next step", {}, { timeout: 2_000 })).toBeTruthy();
+    expect(await slot.findByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" }, { timeout: 2_000 })).toBeTruthy();
   });
 
-  it("says Add to draft on the card when a tap would only join the draft", async () => {
+  it("says Add to draft in the details when a tap would only join the draft", async () => {
     const { slot } = render({ text: "half a thought", ai: { status: "ready", replies: AI_REPLIES } });
-    await slot.findByText("Best next step");
-    expect(slot.getByRole("button", { name: "Add to draft" })).toBeTruthy();
-    expect(slot.queryByRole("button", { name: "Send" })).toBeNull();
+    hover(
+      await slot.findByRole("button", { name: "Add to draft: fix the date parser first, then rerun the import tests" }),
+    );
+    expect(await screen.findByRole("button", { name: "Add to draft" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+  });
+
+  it("keeps a press from opening the details the hover started", async () => {
+    const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
+    const best = await slot.findByRole("button", { name: BEST });
+    hover(best);
+    fireEvent.pointerDown(best, { pointerType: "mouse" });
+    fireEvent.click(best);
+    await waitFor(() => expect(slot.inspection.composer.submits).toHaveLength(1));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(details()).toBeNull();
+  });
+
+  it("opens no details when a touch enters a chip", async () => {
+    const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
+    hover(await slot.findByRole("button", { name: BEST }), "touch");
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(details()).toBeNull();
+  });
+
+  it("closes the details on the first Escape and goes to the composer on the next", async () => {
+    const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
+    const best = await slot.findByRole("button", { name: BEST });
+    best.focus();
+    await findDetails();
+    fireEvent.keyDown(best, { key: "Escape" });
+    await waitFor(() => expect(details()).toBeNull());
+    expect(document.activeElement).toBe(best);
+    expect(slot.inspection.composer.focusCount).toBe(0);
+    // The next Escape goes back to the composer.
+    fireEvent.keyDown(best, { key: "Escape" });
+    expect(slot.inspection.composer.focusCount).toBe(1);
+  });
+
+  it("tells assistive tech why a chip is there", async () => {
+    const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
+    const best = await slot.findByRole("button", { name: BEST });
+    const why = document.getElementById(best.getAttribute("aria-describedby") ?? "");
+    expect(why?.textContent).toBe("Answers the agent's question");
+  });
+
+  it("offers Dismiss on the user's own chips too", async () => {
+    const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
+    await slot.findByRole("button", { name: BEST });
+    hover(slot.getByRole("button", { name: "Send: progress?" }));
+    expect(await screen.findByRole("button", { name: "Dismiss: Progress" })).toBeTruthy();
   });
 
   it("keeps keyboard focus in the row after a keyboard dismissal", async () => {
     const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
-    const dismiss = await slot.findByRole("button", { name: "Dismiss: Fix the parser first" });
-    dismiss.focus();
-    // A keyboard activation reports detail 0.
-    fireEvent.click(dismiss, { detail: 0 });
+    const best = await slot.findByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" });
+    best.focus();
+    // Delete on a focused chip dismisses it.
+    fireEvent.keyDown(best, { key: "Delete" });
     await waitFor(() =>
       expect(document.activeElement?.getAttribute("aria-label")).toBe(
         "Send: paste the failing input for the date parser",
@@ -407,7 +473,7 @@ describe("QuickReplies, with AI", () => {
     const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES }, aiDelayMs: 1_400 });
     const usual = await slot.findByRole("button", { name: "Send: write the docs" });
     usual.focus();
-    expect(await slot.findByText("Best next step", {}, { timeout: 4_000 })).toBeTruthy();
+    expect(await slot.findByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" }, { timeout: 4_000 })).toBeTruthy();
     expect(document.activeElement?.closest('[role="toolbar"]')).not.toBeNull();
   });
 

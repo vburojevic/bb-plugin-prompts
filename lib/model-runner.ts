@@ -67,10 +67,12 @@ export function cliCommand(
   outputFile: string,
 ): string | null {
   if (model !== null && !SAFE_ARG.test(model)) return null;
+  if (reasoningLevel !== null && !SAFE_ARG.test(reasoningLevel)) return null;
   if (providerId === "claude-code")
     return [
       "claude -p",
       model ? `--model ${model}` : "",
+      reasoningLevel ? `--effort ${reasoningLevel}` : "",
       "--no-session-persistence --tools '' --strict-mcp-config --setting-sources ''",
       "--disable-slash-commands --output-format text",
     ]
@@ -78,10 +80,7 @@ export function cliCommand(
       .join(" ");
   if (providerId === "codex") {
     if (!SAFE_ARG.test(outputFile)) return null;
-    const effort =
-      reasoningLevel && SAFE_ARG.test(reasoningLevel)
-        ? ` -c 'model_reasoning_effort="${reasoningLevel}"'`
-        : "";
+    const effort = reasoningLevel ? ` -c 'model_reasoning_effort="${reasoningLevel}"'` : "";
     return (
       `codex exec --ephemeral --skip-git-repo-check -s read-only --color never` +
       (model ? ` -m ${model}` : "") +

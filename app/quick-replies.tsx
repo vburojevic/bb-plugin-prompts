@@ -15,7 +15,7 @@
 //
 // Nothing sends without a tap or its shortcut. With a draft in the composer a
 // chip joins the draft instead, so a half-written prompt is never sent.
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   experimental_useSidebarThreads,
   useComposer,
@@ -29,7 +29,6 @@ import type { AiReplyDto, rpcContract } from "../lib/contract";
 import {
   DEFAULT_AFTER_STOP,
   DEFAULT_ANY_TIME,
-  defaultFocus,
   parseReplyLines,
   quickReplyState,
   replyKey,
@@ -44,7 +43,9 @@ import {
   type TurnOutcome,
 } from "../lib/quick-replies";
 import { composerThreadIdFromScope, useComposerThreadId, usePromptSignal } from "./shared";
+import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
 import { Icon, type IconName } from "@/components/ui/icon";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
 /** Event types that say how the latest turn ended. */
@@ -312,6 +313,10 @@ function isKeyboardFocus(element: HTMLElement): boolean {
 /** How long the model's picks wait after the user last moved or typed in the row. */
 const HOLD_MS = 1_200;
 const LONG_PRESS_MS = 420;
+/** A hover this long opens a chip's details; moving between chips is instant. */
+const HOVER_OPEN_MS = 350;
+/** Grace to move the pointer from a chip into its details. */
+const HOVER_CLOSE_MS = 160;
 
 // ---------------------------------------------------------------------------
 // The row.
@@ -419,24 +424,72 @@ export function QuickReplies() {
     [state, config, pool, shownAi, draft, dismissedKeys],
   );
 
-  // What the card shows: the hovered, focused or long-pressed chip, else the
-  // best one. A new set of chips starts over at the best one.
-  // Focus belongs to one set of chips: a new set reads as unfocused at once,
-  // with no effect in between that could undo a hover landing in that tick.
+  // The chip whose details are open: after a short hover, on keyboard focus,
+  // or on a long press. It belongs to one set of chips: a new set starts
+  // closed, with no effect in between that could undo a hover in that tick.
   const rowKey = `${row.mode}|${row.items.map((entry) => entry.text).join("\u0000")}`;
   const rowKeyRef = useRef(rowKey);
   rowKeyRef.current = rowKey;
-  const [focusState, setFocusState] = useState<{ rowKey: string; index: number | null }>({
+  const [previewState, setPreviewState] = useState<{ rowKey: string; index: number | null }>({
     rowKey,
     index: null,
   });
-  const focus = focusState.rowKey === rowKey ? focusState.index : null;
-  const setFocus = useCallback(
-    (index: number | null) => setFocusState({ rowKey: rowKeyRef.current, index }),
+  const preview = previewState.rowKey === rowKey ? previewState.index : null;
+  const setPreview = useCallback(
+    (index: number | null) => setPreviewState({ rowKey: rowKeyRef.current, index }),
     [],
   );
-  const shown = focus !== null && focus < row.items.length ? focus : defaultFocus(row.items);
-  const focused = row.items[shown] ?? null;
+  const previewChip = preview !== null ? (row.items[preview] ?? null) : null;
+  const compact = useIsCompactViewport();
+  const whyId = useId();
+  const chipEls = useRef<(HTMLButtonElement | null)[]>([]);
+  const anchor = useRef<{ getBoundingClientRect(): DOMRect } | null>(null);
+  const previewVia = useRef<"hover" | "focus" | "press">("hover");
+  const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearPreviewTimers = () => {
+    if (openTimer.current !== null) clearTimeout(openTimer.current);
+    if (closeTimer.current !== null) clearTimeout(closeTimer.current);
+    openTimer.current = null;
+    closeTimer.current = null;
+  };
+  useEffect(() => clearPreviewTimers, []);
+  const showPreview = useCallback(
+    (index: number, via: "hover" | "focus" | "press", delay: number) => {
+      clearPreviewTimers();
+      const open = () => {
+        const el = chipEls.current[index];
+        if (el) anchor.current = { getBoundingClientRect: () => el.getBoundingClientRect() };
+        previewVia.current = via;
+        setPreview(index);
+      };
+      if (delay <= 0) open();
+      else
+        openTimer.current = setTimeout(() => {
+          openTimer.current = null;
+          open();
+        }, delay);
+    },
+    [setPreview],
+  );
+  const hidePreview = useCallback(
+    (delay: number) => {
+      clearPreviewTimers();
+      if (delay <= 0) {
+        setPreview(null);
+        return;
+      }
+      closeTimer.current = setTimeout(() => {
+        closeTimer.current = null;
+        setPreview(null);
+      }, delay);
+    },
+    [setPreview],
+  );
+  const keepPreview = () => {
+    if (closeTimer.current !== null) clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+  };
 
   const [busy, setBusy] = useState(false);
   const altHeld = useAltHeld();
@@ -460,6 +513,8 @@ export function QuickReplies() {
   const run = useCallback(
     async (chip: RowItem) => {
       if (busy || threadId === null) return;
+      // A card about to open over the row stays closed: the chip is used.
+      hidePreview(0);
       const learns = chip.kind !== "retry" && chip.kind !== "any";
       if (chip.action === "complete" || chip.action === "fill") {
         putInComposer(chip.text, chip.action === "complete");
@@ -512,7 +567,7 @@ export function QuickReplies() {
         setBusy(false);
       }
     },
-    [busy, threadId, projectId, fillOnly, composer, putInComposer, feedback, rpc, sdk],
+    [busy, threadId, projectId, fillOnly, composer, putInComposer, feedback, rpc, sdk, hidePreview],
   );
 
   const edit = useCallback(
@@ -529,10 +584,10 @@ export function QuickReplies() {
         turnKey: ai.turnKey,
         keys: new Set([...(current.turnKey === ai.turnKey ? current.keys : []), key]),
       }));
-      setFocus(null);
+      setPreview(null);
       if (chip.kind !== "retry") feedback(chip.text, "dismiss");
     },
-    [ai.turnKey, feedback],
+    [ai.turnKey, feedback, setPreview],
   );
 
   // The keyboard shortcuts reach this row's chips through the registry.
@@ -578,7 +633,9 @@ export function QuickReplies() {
     else composer.focus();
   });
   const backToComposer = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "Escape") return;
+    // The first Escape closes a chip's details (the popover takes it), the
+    // next goes back to the composer.
+    if (event.key !== "Escape" || event.defaultPrevented) return;
     event.preventDefault();
     composer.focus();
   };
@@ -600,7 +657,10 @@ export function QuickReplies() {
 
   return (
     <div
-      className="mb-2 flex flex-col gap-1.5"
+      // First in the composer's banner stack, above every other plugin's:
+      // bb lays the banners out as one grid and wraps each in a
+      // display:contents element, so this root is the grid item `order` moves.
+      className="order-first mb-2 flex flex-col gap-1.5"
       data-quick-replies={row.mode}
       onKeyDown={(event) => {
         touchRow();
@@ -624,21 +684,9 @@ export function QuickReplies() {
       onMouseLeave={() => {
         busyUntil.current = 0;
         rerender((n) => n + 1);
-        setFocus(null);
+        if (previewVia.current === "hover") hidePreview(HOVER_CLOSE_MS);
       }}
     >
-      {row.spotlight ? (
-        <Spotlight
-          chip={loading && row.mode === "loading" ? null : focused}
-          index={shown}
-          mode={row.mode}
-          busy={busy || composer.isSubmitting}
-          onRun={(chip) => void run(chip)}
-          onEdit={edit}
-          onDismiss={dismiss}
-          fills={fillOnly || !composer.isEmpty}
-        />
-      ) : null}
       <div className="flex min-w-0 items-center gap-1.5">
         <div
           ref={toolbar}
@@ -680,25 +728,61 @@ export function QuickReplies() {
                   }
                   void run(chip);
                 }}
-                onMouseEnter={() => setFocus(index)}
-                onFocus={() => setFocus(index)}
+                ref={(el) => {
+                  chipEls.current[index] = el;
+                }}
+                // A mouse only: a tap on a touch screen enters a chip too.
+                onPointerEnter={(event) => {
+                  if (event.pointerType === "mouse" && !compact)
+                    showPreview(index, "hover", preview === null ? HOVER_OPEN_MS : 0);
+                }}
+                onPointerLeave={(event) => {
+                  clearPress();
+                  if (event.pointerType === "mouse" && !compact && previewVia.current === "hover")
+                    hidePreview(HOVER_CLOSE_MS);
+                }}
+                onFocus={(event) => {
+                  // On a phone the details are a sheet over the page: not for every chip tabbed past.
+                  if (!compact && isKeyboardFocus(event.currentTarget)) showPreview(index, "focus", 0);
+                }}
+                onBlur={(event) => {
+                  const next = event.relatedTarget as Element | null;
+                  if (previewVia.current !== "focus") return;
+                  if (next?.closest("[data-chip], [data-quick-reply-details]")) return;
+                  hidePreview(0);
+                }}
+                onKeyDown={(event) => {
+                  // E edits the focused chip, Delete or Backspace dismisses it.
+                  if (event.key === "e" || event.key === "E") {
+                    event.preventDefault();
+                    hidePreview(0);
+                    edit(chip);
+                  } else if ((event.key === "Delete" || event.key === "Backspace") && chip.kind !== "retry") {
+                    event.preventDefault();
+                    dismiss(chip);
+                  }
+                }}
                 onPointerDown={(event) => {
+                  // A press is not a hover: details about to open stay closed.
+                  if (openTimer.current !== null) clearPreviewTimers();
                   if (event.pointerType !== "touch") return;
                   pressed.current = false;
                   clearPress();
                   pressTimer.current = setTimeout(() => {
                     pressed.current = true;
-                    setFocus(index);
+                    showPreview(index, "press", 0);
                   }, LONG_PRESS_MS);
                 }}
                 onPointerUp={clearPress}
                 onPointerCancel={clearPress}
-                onPointerLeave={clearPress}
                 onContextMenu={(event) => {
                   if (pressed.current) event.preventDefault();
                 }}
-                title={chip.text}
                 aria-label={`${verb}: ${chip.text}`}
+                aria-describedby={chip.why ? `${whyId}-${index}` : undefined}
+                // A narrow window has no hover card: the full message as a tooltip.
+                title={compact ? chip.text : undefined}
+                aria-expanded={index === preview}
                 aria-keyshortcuts={index < QUICK_REPLY_SHORTCUTS ? shortcutFor(index).ariaKeyshortcuts : undefined}
                 style={{ animationDelay: `${Math.min(index, 6) * 55}ms` }}
                 className={cn(
@@ -713,9 +797,7 @@ export function QuickReplies() {
                     : chip.primary
                       ? "border border-primary/40 text-primary hover:bg-primary/10"
                       : "border border-border text-foreground/85 hover:bg-state-hover hover:text-foreground",
-                  index === shown && row.spotlight && row.mode !== "loading" && !chip.best
-                    ? "bg-state-hover text-foreground"
-                    : "",
+                  index === preview && !chip.best ? "bg-state-hover text-foreground" : "",
                 )}
               >
                 {retries ? (
@@ -733,6 +815,23 @@ export function QuickReplies() {
             );
           })}
         </div>
+        <div hidden>
+          {row.items.map((chip, index) =>
+            chip.why ? (
+              <span key={`${chip.kind}:${chip.text}`} id={`${whyId}-${index}`}>
+                {chip.why}
+              </span>
+            ) : null,
+          )}
+        </div>
+        {loading ? (
+          <span
+            role="status"
+            className="shrink-0 animate-pulse text-xs text-muted-foreground motion-reduce:animate-none max-md:pointer-coarse:sr-only"
+          >
+            Reading the thread
+          </span>
+        ) : null}
         {canRegenerate ? (
           <button
             type="button"
@@ -761,95 +860,157 @@ export function QuickReplies() {
           </button>
         ) : null}
       </div>
+      <Popover
+        open={previewChip !== null}
+        onOpenChange={(open) => {
+          if (!open) hidePreview(0);
+        }}
+      >
+        <PopoverAnchor virtualRef={anchor} />
+        {previewChip !== null && preview !== null ? (
+          <PopoverContent
+            side="top"
+            align="start"
+            sideOffset={8}
+            collisionPadding={8}
+            // The desktop card's size; the phone sheet keeps bb's own.
+            className={compact ? undefined : "w-80 p-3"}
+            mobileTitle={previewChip.label}
+            // Details, not a dialog: focus stays where it was.
+            onOpenAutoFocus={(event) => event.preventDefault()}
+            onCloseAutoFocus={(event) => event.preventDefault()}
+            // Focus stays on the chip that opened the details, which is
+            // outside them; the chip's own blur closes them when focus leaves.
+            onFocusOutside={(event) => event.preventDefault()}
+            onMouseEnter={keepPreview}
+            onMouseLeave={() => {
+              if (previewVia.current === "hover") hidePreview(HOVER_CLOSE_MS);
+            }}
+          >
+            <ChipDetails
+              chip={previewChip}
+              index={preview}
+              mode={row.mode}
+              compact={compact}
+              busy={busy || composer.isSubmitting}
+              fills={fillOnly || !composer.isEmpty}
+              onRun={(chip) => {
+                hidePreview(0);
+                void run(chip);
+              }}
+              onEdit={(chip) => {
+                hidePreview(0);
+                edit(chip);
+              }}
+              onDismiss={dismiss}
+            />
+          </PopoverContent>
+        ) : null}
+      </Popover>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// The card above the chips.
+// A chip's details: what it sends, why, and what to do with it.
 
-function Spotlight({
+function ChipDetails({
   chip,
   index,
   mode,
+  compact,
   busy,
+  fills,
   onRun,
   onEdit,
   onDismiss,
-  fills,
 }: {
-  chip: RowItem | null;
+  chip: RowItem;
   index: number;
   mode: string;
+  compact: boolean;
   busy: boolean;
+  /** A tap adds to the draft instead of sending (a draft, or the fill setting). */
+  fills: boolean;
   onRun(chip: RowItem): void;
   onEdit(chip: RowItem): void;
   onDismiss(chip: RowItem): void;
-  /** A tap adds to the draft instead of sending (a draft, or the fill setting). */
-  fills: boolean;
 }) {
-  if (chip === null)
-    return (
-      <div
-        role="status"
-        className="flex h-[60px] items-center gap-2 rounded-xl bg-muted/50 px-3.5 text-[13px] text-muted-foreground animate-in fade-in-0 duration-200 max-md:pointer-coarse:h-[92px] max-md:pointer-coarse:text-sm"
-      >
-        <Icon name="Sparkles" className="size-3.5 shrink-0" aria-hidden />
-        <span className="animate-pulse motion-reduce:animate-none">Reading the last reply</span>
-      </div>
-    );
-
-  const icon = KIND_ICON[chip.kind];
+  const icon = chip.action === "queue" ? "Clock" : KIND_ICON[chip.kind];
   const eyebrow =
     mode === "filter" && chip.best
       ? "Completes your draft"
       : chip.best
         ? "Best next step"
-        : KIND_NAME[chip.kind];
+        : chip.action === "queue"
+          ? "Sends when this turn ends"
+          : KIND_NAME[chip.kind];
   const verb =
     chip.action === "complete" || chip.action === "fill"
       ? "Use"
       : chip.action === "queue"
         ? "Queue"
-        : fills
-          ? "Add to draft"
-          : "Send";
+        : chip.action === "retry" && !fills
+          ? "Retry"
+          : fills
+            ? "Add to draft"
+            : "Send";
+  const canDismiss = chip.kind !== "retry";
+  const button =
+    "flex items-center justify-center gap-1.5 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50";
   return (
-    <div className="rounded-xl bg-muted/50" aria-live="polite">
-      <div
-        key={`${index}:${chip.text}`}
-        className={cn(
-          "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-2.5 pl-3.5 pr-2.5",
-          "animate-in fade-in-0 duration-200 motion-reduce:animate-none",
-          "max-md:pointer-coarse:grid-cols-1 max-md:pointer-coarse:gap-2.5 max-md:pointer-coarse:p-3.5",
-        )}
-      >
-        <div className="min-w-0">
-          <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground max-md:pointer-coarse:flex-wrap max-md:pointer-coarse:gap-y-0.5 max-md:pointer-coarse:text-[13px]">
-            {icon ? <Icon name={icon} className="size-3.5 shrink-0" aria-hidden /> : null}
-            <span className="shrink-0 font-medium text-foreground">{eyebrow}</span>
-            {chip.why ? (
-              <>
-                <span aria-hidden className="max-md:pointer-coarse:hidden">·</span>
-                {/* On a phone the why gets its own line instead of an ellipsis. */}
-                <span className="truncate max-md:pointer-coarse:basis-full max-md:pointer-coarse:whitespace-normal">
-                  {chip.why}
-                </span>
-              </>
-            ) : null}
-          </div>
-          <p className="mt-0.5 line-clamp-2 text-[13px] leading-snug text-foreground max-md:pointer-coarse:line-clamp-3 max-md:pointer-coarse:text-[15px]">
-            {chip.text}
-          </p>
+    <div data-quick-reply-details className="flex flex-col">
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        {icon ? <Icon name={icon} className="size-3.5 shrink-0" aria-hidden /> : null}
+        <span className="font-medium text-foreground">{eyebrow}</span>
+      </div>
+      {compact ? <p className="mt-1.5 text-lg font-semibold leading-snug text-foreground">{chip.label}</p> : null}
+      <p className={cn("mt-1.5 leading-snug text-foreground", compact ? "text-[15px]" : "text-[13px]")}>
+        {chip.text}
+      </p>
+      {chip.why ? (
+        <p className={cn("mt-1.5 leading-snug text-muted-foreground", compact ? "text-[13px]" : "text-xs")}>
+          {chip.why}
+        </p>
+      ) : null}
+      {compact ? (
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onRun(chip)}
+            className={cn(button, "col-span-2 h-11 rounded-full bg-foreground text-[15px] font-medium text-background")}
+          >
+            {verb}
+          </button>
+          <button
+            type="button"
+            onClick={() => onEdit(chip)}
+            className={cn(button, "h-11 rounded-full bg-muted text-[15px] text-foreground", canDismiss ? "" : "col-span-2")}
+          >
+            <Icon name="Edit" className="size-4" aria-hidden />
+            Edit
+          </button>
+          {canDismiss ? (
+            <button
+              type="button"
+              onClick={() => onDismiss(chip)}
+              className={cn(button, "h-11 rounded-full bg-muted text-[15px] text-foreground")}
+            >
+              <Icon name="X" className="size-4" aria-hidden />
+              Dismiss
+            </button>
+          ) : null}
         </div>
-        <div className="flex items-center gap-1 max-md:pointer-coarse:grid max-md:pointer-coarse:grid-cols-[auto_auto_1fr] max-md:pointer-coarse:gap-2">
-          {chip.kind !== "retry" ? (
+      ) : (
+        <div className="mt-2.5 flex items-center gap-1 border-t border-border pt-2">
+          {canDismiss ? (
             <button
               type="button"
               onClick={() => onDismiss(chip)}
               aria-label={`Dismiss: ${chip.label}`}
               title="Dismiss. Quick replies learn from it"
-              className="grid size-7 place-items-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 max-md:pointer-coarse:size-10"
+              className={cn(button, "size-7 rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground")}
             >
               <Icon name="X" className="size-3.5" aria-hidden />
             </button>
@@ -858,7 +1019,7 @@ function Spotlight({
             type="button"
             onClick={() => onEdit(chip)}
             title="Put it in the composer to change it first"
-            className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-muted-foreground transition-colors duration-150 hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 max-md:pointer-coarse:h-10 max-md:pointer-coarse:px-3 max-md:pointer-coarse:text-sm"
+            className={cn(button, "h-7 rounded-md px-2 text-xs text-muted-foreground hover:bg-state-hover hover:text-foreground")}
           >
             <Icon name="Edit" className="size-3.5" aria-hidden />
             Edit
@@ -867,13 +1028,13 @@ function Spotlight({
             type="button"
             disabled={busy}
             onClick={() => onRun(chip)}
-            className="flex h-7 items-center justify-center gap-2 rounded-lg bg-foreground px-2.5 text-xs font-medium text-background transition-opacity duration-150 hover:opacity-90 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50 max-md:pointer-coarse:h-10 max-md:pointer-coarse:text-sm"
+            className={cn(button, "ml-auto h-7 gap-2 rounded-md bg-foreground px-2.5 text-xs font-medium text-background hover:opacity-90")}
           >
             {verb}
             {index < QUICK_REPLY_SHORTCUTS ? <Keycap index={index} /> : null}
           </button>
         </div>
-      </div>
+      )}
     </div>
   );
 }

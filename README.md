@@ -202,19 +202,26 @@ thread, and your own habits and snippets when they fit.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/quick-replies-ai-dark.png">
-  <img src="assets/screenshots/quick-replies-ai.png" width="100%" alt="The agent asked whether to throw an error or return a result object. Above the composer, a card shows the best next step, Return a result object with the reason, with Edit and Send. Below it, a solid chip Return a result with the shortcut Option 1, then Throw an error and Status.">
+  <img src="assets/screenshots/quick-replies-ai.png" width="100%" alt="The agent asked whether to throw an error or return a result object. Above the composer, a solid chip Return a result object with the shortcut Option 1, then Throw a descriptive error and Status. Hovering the first chip opens a small card with the full message, why it fits, and Dismiss, Edit and Send.">
 </picture>
 
-**The best next step leads.** It is the solid chip, and the card above the
-chips shows exactly what it sends and why. Hover or focus another chip, or
-long-press it on a phone, and the card shows that one instead. A chip's label
-is short; what it sends is the full message, written the way you write.
+**Just the chips.** Nothing extra sits above the composer. Hover a chip, or
+reach it with the keyboard, and a small card opens from it with the full
+message it sends, why it is there, and **Dismiss**, **Edit** and **Send**. On
+a phone, press and hold a chip for the same as a sheet. A chip's label is
+short; what it sends is the full message, written the way you write.
 
-**One tap, or one key.** Option+1 to 5 (Alt on Windows and Linux) sends that
-chip from the composer; arrow keys move along the row. **Edit** puts the
-message in the composer to change first, **Dismiss** drops it, and the arrow at
-the end asks again. Taps and dismissals are remembered per project: what you
-use rises, and what you dismiss is not suggested again.
+**The best next step leads.** It is the solid chip, with its shortcut.
+**Option+1** to **5** (Alt on Windows and Linux) sends a chip from the
+composer; arrow keys move along the row, **E** edits the focused chip and
+**Delete** dismisses it. The arrow at the end of the row asks again. Taps and
+dismissals are remembered per project: what you use rises, and what you
+dismiss is not suggested again.
+
+**One chip per idea.** Two phrasings of the same request ("Use ask mode",
+"Use ask mode in bb") show as one chip, and the next idea takes the freed
+place. Answers to the agent's question always stay, even when they read
+alike. The row sits first above the composer, over other plugins' banners.
 
 | The thread                       | The row                                              |
 | -------------------------------- | ---------------------------------------------------- |
@@ -228,13 +235,13 @@ use rises, and what you dismiss is not suggested again.
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/quick-replies-phone-dark.png">
-    <img src="assets/screenshots/quick-replies-phone.png" width="380" alt="On a phone the card spans the width with a large Send button, and the chips scroll sideways below it.">
+    <img src="assets/screenshots/quick-replies-phone.png" width="380" alt="On a phone, pressing and holding a chip opens a sheet with the full message, why it fits, a large Send button, Edit and Dismiss.">
   </picture>
 </p>
 
-**Which model, and what it costs.** On Claude Code it is Haiku 5.5; on Codex
-the fastest model bb's catalog lists; on any other provider the smallest one it
-offers. It runs once per finished turn, only for a thread on your screen, so a
+**Which model, and what it costs.** On Claude Code it is Haiku 5.5 and on
+Codex gpt-6-luna, both at medium thinking; on any other provider the smallest
+model it offers. It runs once per finished turn, only for a thread on your screen, so a
 fleet of threads you never open never calls a model. The provider's own CLI
 answers when it is signed in; otherwise a short-lived hidden bb thread on the
 same provider does, in a scratch workspace that is deleted with it, so it works

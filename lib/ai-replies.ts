@@ -216,6 +216,8 @@ export function buildSuggestPrompt(input: SuggestPromptInput): string {
     '- Write replies specific to this thread, kind "ai": name the files, tests, errors and decisions from the conversation.',
     '- Add a habit (kind "habit", text exactly as listed) or a snippet (kind "snippet", with its id) only when it clearly fits what should happen next.',
     "- Never suggest something the agent already did, something the user ruled out, or anything dismissed.",
+    "- Every reply asks for something different. Never two that say the same thing in other words, and no habit that repeats a reply you wrote.",
+    "- Skip filler: no reply that only thanks or agrees, and no bare \"continue\" unless continuing is clearly the next step.",
     "- Only the latest state counts: an error or question that a later message moved past is settled.",
     "- label: 2 to 5 words, sentence case, no final period.",
     "- text: the full message to send, written the way this user writes: short and direct, lowercase is fine, spelled correctly, no greeting, under 240 characters.",
@@ -392,11 +394,14 @@ export function smallModelFor(
   return best !== null && best.score > 0 ? best.model : pinned;
 }
 
-/** The lowest reasoning level a model takes, for speed; null when it lists none. */
-export function lightestReasoning(model: CatalogModel | undefined): string | null {
-  const levels = model?.reasoningLevels ?? [];
-  for (const level of ["none", "minimal", "low"]) if (levels.includes(level)) return level;
-  return null;
+/**
+ * The thinking level quick replies ask for: medium (the owner's call,
+ * 2026-11-17), when the model lists it. Null leaves the model's default.
+ */
+export const QUICK_REPLY_REASONING = "medium";
+
+export function reasoningFor(model: CatalogModel | undefined): string | null {
+  return model?.reasoningLevels?.includes(QUICK_REPLY_REASONING) ? QUICK_REPLY_REASONING : null;
 }
 
 /**
