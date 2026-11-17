@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { QuickReplies } from "./quick-replies";
+import { CompactViewportOverrideProvider } from "@/components/ui/hooks/use-compact-viewport";
 
 // Every phrase here is invented demo text.
 const THREAD = "thr_demo";
@@ -55,11 +56,21 @@ function render(options: {
   /** Delay the model's answer, to act on the row before it lands. */
   aiDelayMs?: number;
   threadListed?: boolean;
+  /** Render at phone width: details open as a sheet. */
+  compact?: boolean;
 }) {
   const retryCalls: unknown[] = [];
   const ai = options.ai ?? { status: "off" };
   const slot = renderSlot(
-    { component: QuickReplies },
+    {
+      component: options.compact
+        ? () => (
+            <CompactViewportOverrideProvider isCompactViewport>
+              <QuickReplies />
+            </CompactViewportOverrideProvider>
+          )
+        : QuickReplies,
+    },
     {},
     {
       settings: {
@@ -320,6 +331,51 @@ describe("QuickReplies, with AI", () => {
     );
     expect(chipTexts(slot)[0]).toMatch(/⌥1|Alt\+1/);
     await waitFor(() => expect(calls(slot, "quickReplyFeedback")[0]?.input).toMatchObject({ action: "dismiss" }));
+  });
+
+  it("keeps the suggest-again arrow out of sight until the row is pointed at or focused", async () => {
+    const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
+    await slot.findByRole("button", { name: BEST });
+    const again = slot.getByRole("button", { name: "Suggest again" });
+    expect(again.className).toContain("opacity-0");
+    expect(again.className).toContain("group-hover/qr:opacity-100");
+    expect(again.className).toContain("group-focus-within/qr:opacity-100");
+  });
+
+  it("keeps the arrow in view after a failure, as the retry", async () => {
+    const { slot } = render({ ai: { status: "error", error: "The model took too long to answer" } });
+    const retry = await slot.findByRole("button", { name: "Try suggesting again" });
+    expect(retry.className).not.toContain("opacity-0");
+    expect(retry.className).toContain("text-destructive");
+  });
+
+  it("offers Suggest others in the phone sheet", async () => {
+    const { slot } = render({ compact: true, ai: { status: "ready", replies: AI_REPLIES } });
+    const best = await slot.findByRole("button", { name: BEST });
+    fireEvent.pointerDown(best, { pointerType: "touch" });
+    const others = await screen.findByRole("button", { name: "Suggest others" }, { timeout: 2_000 });
+    fireEvent.pointerUp(window, { pointerType: "touch" });
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    fireEvent.click(others);
+    await waitFor(() =>
+      expect(calls(slot, "aiQuickReplies").some((call) => (call.input as { refresh: boolean }).refresh)).toBe(true),
+    );
+  });
+
+  it("ignores the lift of the long press that opened the phone sheet", async () => {
+    const { slot } = render({ compact: true, ai: { status: "ready", replies: AI_REPLIES } });
+    const best = await slot.findByRole("button", { name: BEST });
+    fireEvent.pointerDown(best, { pointerType: "touch" });
+    const send = await screen.findByRole("button", { name: "Send" }, { timeout: 2_000 });
+    // The finger lifts over the sheet's Send: that tap does nothing.
+    fireEvent.pointerUp(window, { pointerType: "touch" });
+    fireEvent.click(send);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(slot.inspection.composer.submits).toHaveLength(0);
+    // A real tap a moment later sends.
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(slot.inspection.composer.submits).toHaveLength(1));
   });
 
   it("asks the model again on regenerate", async () => {

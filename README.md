@@ -202,7 +202,7 @@ thread, and your own habits and snippets when they fit.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/quick-replies-ai-dark.png">
-  <img src="assets/screenshots/quick-replies-ai.png" width="100%" alt="The agent changed parseInvoiceDate and asked whether to open a PR. Above the composer, outline chips, each with an icon for what it asks: Not yet, fix callers first, a little brighter with the shortcut Option 1, then Yes, open the PR, Run the tests first and Show the two broken callers. Hovering the first chip opens a small card with the full message, why it fits, and Dismiss, Edit and Send.">
+  <img src="assets/screenshots/quick-replies-ai.png" width="100%" alt="The agent changed parseInvoiceDate and asked whether to open a PR. Above the composer, outline chips, each with an icon for what it asks: Not yet, fix callers first with the shortcut Option 1, then Yes, open the PR, Run the tests first and Show the two broken callers. Hovering the first chip opens a small card with the full message, why it fits, and Dismiss, Edit and Send.">
 </picture>
 
 **It waits for the good ones.** While the agent works, the row stays out of
@@ -222,10 +222,10 @@ message it sends, why it is there, and **Dismiss**, **Edit** and **Send**. On
 a phone, press and hold a chip for the same as a sheet. A chip's label is
 short; what it sends is the full message, written the way you write.
 
-**The best next step leads.** It is first, a little brighter, with its shortcut.
+**The best next step leads.** It is first, with its shortcut.
 **Option+1** to **5** (Alt on Windows and Linux) sends a chip from the
 composer; arrow keys move along the row, **E** edits the focused chip and
-**Delete** dismisses it. The arrow at the end of the row asks again. Taps and
+**Delete** dismisses it. Point at the row and an arrow at its end asks again; on a touch screen, **Suggest others** is in the chip's card, and no shortcut keys show. Taps and
 dismissals are remembered per project: what you use rises, and what you
 dismiss is not suggested again.
 

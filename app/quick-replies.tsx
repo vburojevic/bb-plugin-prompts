@@ -4,9 +4,9 @@
 // reads the end of the conversation with its fastest model and suggests what
 // to send next, mixed with the user's habits and snippets when they fit. A
 // quiet line holds the row while the model reads, and the picks land
-// together. The best next step leads, a little brighter, with its Option+1
-// key; a small card shows what the hovered, focused or long-pressed chip
-// sends and why.
+// together. Every chip looks the same; the best next step leads, with its
+// Option+1 key; a small card shows what the hovered, focused or long-pressed
+// chip sends and why.
 //
 // Other moments: a failed turn leads with Retry, an interrupted one with
 // Continue; a draft narrows the row to chips that complete it; while the
@@ -44,6 +44,7 @@ import {
 } from "../lib/quick-replies";
 import { composerThreadIdFromScope, useComposerThreadId, usePromptSignal } from "./shared";
 import { useIsCompactViewport } from "@/components/ui/hooks/use-compact-viewport";
+import { usePointerCoarse } from "@/components/ui/hooks/use-pointer-coarse";
 import { Icon, type IconName } from "@/components/ui/icon";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
@@ -127,14 +128,14 @@ function shortcutFor(index: number) {
   return { ariaKeyshortcuts: `Alt+${key}`, label: IS_MAC ? `⌥${key}` : `Alt+${key}` };
 }
 
-/** A keycap for a chip's shortcut; hidden on touch, where there is no keyboard. */
+/** A keycap for a chip's shortcut; hidden on any touch screen, phone or tablet, where there is no keyboard. */
 function Keycap({ index, className }: { index: number; className?: string }) {
   return (
     <kbd
       aria-hidden
       className={cn(
         "rounded-[4px] px-1 font-mono text-[10px] leading-4 tracking-tight shadow-[inset_0_0_0_1px_currentColor] opacity-60",
-        "max-md:pointer-coarse:hidden",
+        "pointer-coarse:hidden",
         className,
       )}
     >
@@ -349,6 +350,8 @@ function isKeyboardFocus(element: HTMLElement): boolean {
   }
 }
 const LONG_PRESS_MS = 420;
+/** After a long press lifts, the details still ignore taps this long: the lift's own tap lands after it. */
+const LIFT_GRACE_MS = 400;
 
 /**
  * The loading line's motion: a highlight that sweeps the words and a sparkle
@@ -459,6 +462,8 @@ export function QuickReplies() {
   );
   const previewChip = preview !== null ? (row.items[preview] ?? null) : null;
   const compact = useIsCompactViewport();
+  // A touch screen: no hover, so no arrow in the row and no shortcut keys.
+  const coarse = usePointerCoarse();
   const whyId = useId();
   const chipEls = useRef<(HTMLButtonElement | null)[]>([]);
   const anchor = useRef<{ getBoundingClientRect(): DOMRect } | null>(null);
@@ -613,6 +618,27 @@ export function QuickReplies() {
     pressTimer.current = null;
   };
   useEffect(() => clearPress, []);
+  // The finger that opened the details by a long press is still down. On a
+  // phone the sheet slides up under it, and lifting it there must not tap
+  // Send: the details ignore taps until it lifts, and a moment after.
+  const holding = useRef(false);
+  const holdUntilLift = () => {
+    holding.current = true;
+    const lift = () => {
+      window.removeEventListener("pointerup", lift, true);
+      window.removeEventListener("pointercancel", lift, true);
+      setTimeout(() => {
+        holding.current = false;
+      }, LIFT_GRACE_MS);
+    };
+    window.addEventListener("pointerup", lift, true);
+    window.addEventListener("pointercancel", lift, true);
+  };
+  const unlessHolding =
+    <A extends unknown[]>(act: (...args: A) => void) =>
+    (...args: A) => {
+      if (!holding.current) act(...args);
+    };
 
   const toolbar = useRef<HTMLDivElement | null>(null);
   // The element in the row a keyboard user is on. When the chips change and
@@ -658,7 +684,7 @@ export function QuickReplies() {
       // First in the composer's banner stack, above every other plugin's:
       // bb lays the banners out as one grid and wraps each in a
       // display:contents element, so this root is the grid item `order` moves.
-      className="order-first mb-2 flex flex-col gap-1.5"
+      className="group/qr order-first mb-2 flex flex-col gap-1.5"
       data-quick-replies={row.mode}
       onKeyDown={backToComposer}
       onFocus={(event) => {
@@ -777,6 +803,7 @@ export function QuickReplies() {
                   clearPress();
                   pressTimer.current = setTimeout(() => {
                     pressed.current = true;
+                    holdUntilLift();
                     showPreview(index, "press", 0);
                   }, LONG_PRESS_MS);
                 }}
@@ -800,11 +827,9 @@ export function QuickReplies() {
                   "disabled:pointer-events-none disabled:opacity-50",
                   "animate-in fade-in-0 slide-in-from-bottom-2 zoom-in-95 fill-mode-both duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] [--tw-enter-blur:6px] motion-reduce:animate-none",
                   touchHint,
-                  // Every chip is the same quiet outline; the best one (and
-                  // Continue after a stop) is only a little brighter, with
-                  // its Option+1 key.
-                  "border hover:bg-state-hover hover:text-foreground",
-                  chip.best || chip.primary ? "border-foreground/30 text-foreground" : "border-border text-foreground/75",
+                  // Every chip is the same quiet outline; only the best one's
+                  // Option+1 key sets it apart.
+                  "border border-border text-foreground/85 hover:bg-state-hover hover:text-foreground",
                   index === preview ? "bg-state-hover text-foreground" : "",
                 )}
               >
@@ -813,7 +838,7 @@ export function QuickReplies() {
                 ) : icon ? (
                   <Icon
                     name={icon}
-                    className={cn("size-3.5 shrink-0", chip.best || chip.primary ? "text-foreground" : "text-muted-foreground")}
+                    className="size-3.5 shrink-0 text-muted-foreground"
                     aria-hidden
                   />
                 ) : null}
@@ -845,10 +870,20 @@ export function QuickReplies() {
             aria-label={ai.status === "error" ? "Try suggesting again" : "Suggest again"}
             className={cn(
               "grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground",
-              "transition-colors duration-150 hover:bg-state-hover hover:text-foreground",
+              "transition-[opacity,color,background-color] duration-150 hover:bg-state-hover hover:text-foreground",
               "focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50",
-              "aria-disabled:cursor-default aria-disabled:opacity-40 max-md:pointer-coarse:size-10",
-              ai.status === "error" ? "text-destructive" : "",
+              "aria-disabled:cursor-default max-md:pointer-coarse:size-10",
+              // Out of sight until the row is pointed at or focused: the
+              // picks refresh on their own every turn. A failure keeps it in
+              // view as the retry; on a touch screen it lives in the sheet.
+              ai.status === "error"
+                ? "text-destructive"
+                : cn(
+                    "opacity-0 pointer-coarse:hidden",
+                    loading
+                      ? "group-hover/qr:opacity-40 group-focus-within/qr:opacity-40 focus-visible:opacity-40"
+                      : "group-hover/qr:opacity-100 group-focus-within/qr:opacity-100 focus-visible:opacity-100",
+                  ),
             )}
           >
             <Icon
@@ -893,15 +928,24 @@ export function QuickReplies() {
               compact={compact}
               busy={busy || composer.isSubmitting}
               fills={fillOnly || !composer.isEmpty}
-              onRun={(chip) => {
+              onRun={unlessHolding((chip: RowItem) => {
                 hidePreview(0);
                 void run(chip);
-              }}
-              onEdit={(chip) => {
+              })}
+              onEdit={unlessHolding((chip: RowItem) => {
                 hidePreview(0);
                 edit(chip);
-              }}
-              onDismiss={dismiss}
+              })}
+              onDismiss={unlessHolding(dismiss)}
+              // A touch screen has no arrow in the row: asking again is here.
+              onSuggestOthers={
+                (compact || coarse) && canRegenerate && !loading && ai.status !== "error"
+                  ? unlessHolding(() => {
+                      hidePreview(0);
+                      ai.refresh();
+                    })
+                  : undefined
+              }
             />
           </PopoverContent>
         ) : null}
@@ -923,6 +967,7 @@ function ChipDetails({
   onRun,
   onEdit,
   onDismiss,
+  onSuggestOthers,
 }: {
   chip: RowItem;
   index: number;
@@ -934,6 +979,8 @@ function ChipDetails({
   onRun(chip: RowItem): void;
   onEdit(chip: RowItem): void;
   onDismiss(chip: RowItem): void;
+  /** Ask the model for other picks; the phone sheet's stand-in for the row's arrow. */
+  onSuggestOthers?: () => void;
 }) {
   // The chip shows what it asks for; the card adds where it came from.
   const icon = KIND_ICON[chip.kind];
@@ -949,7 +996,7 @@ function ChipDetails({
           : "Send";
   const canDismiss = chip.kind !== "retry";
   const button =
-    "flex items-center justify-center gap-1.5 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50";
+    "flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap transition-colors duration-150 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50";
   return (
     <div data-quick-reply-details className="flex flex-col">
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -993,6 +1040,16 @@ function ChipDetails({
               Dismiss
             </button>
           ) : null}
+          {onSuggestOthers ? (
+            <button
+              type="button"
+              onClick={onSuggestOthers}
+              className={cn(button, "col-span-2 h-11 rounded-full text-[15px] text-muted-foreground")}
+            >
+              <Icon name="RotateCcw" className="size-4" aria-hidden />
+              Suggest others
+            </button>
+          ) : null}
         </div>
       ) : (
         <div className="mt-2.5 flex items-center gap-1 border-t border-border pt-2">
@@ -1016,6 +1073,17 @@ function ChipDetails({
             <Icon name="Edit" className="size-3.5" aria-hidden />
             Edit
           </button>
+          {onSuggestOthers ? (
+            <button
+              type="button"
+              onClick={onSuggestOthers}
+              aria-label="Suggest others"
+              title="Suggest others"
+              className={cn(button, "size-7 rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground")}
+            >
+              <Icon name="RotateCcw" className="size-3.5" aria-hidden />
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={busy}
