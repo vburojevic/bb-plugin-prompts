@@ -562,7 +562,6 @@ export function QuickReplies() {
   useEffect(() => clearPress, []);
 
   const toolbar = useRef<HTMLDivElement | null>(null);
-  const root = useRef<HTMLDivElement | null>(null);
   // The element in the row a keyboard user is on. When the chips change and
   // take it away (the picks landed, a Dismiss), focus moves to the row's
   // first chip, or the composer, instead of falling to the page. Nothing
@@ -601,7 +600,6 @@ export function QuickReplies() {
 
   return (
     <div
-      ref={root}
       className="mb-2 flex flex-col gap-1.5"
       data-quick-replies={row.mode}
       onKeyDown={(event) => {
