@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  defaultFocus,
   rowFor,
   similarReplies,
   editDistance,
@@ -295,10 +294,9 @@ describe("rowFor", () => {
     dismissed: new Set<string>(),
   };
 
-  it("shows the usual chips while the model reads, with no empty card", () => {
+  it("shows the usual chips while the model reads", () => {
     const row = rowFor({ ...base, state: "finished", ai: { status: "pending", replies: [] } });
     expect(row.mode).toBe("loading");
-    expect(row.spotlight).toBe(false);
     expect(row.items.map((item) => item.label)).toEqual(["Commit and push", "Run the tests", "Status"]);
   });
 
@@ -310,13 +308,13 @@ describe("rowFor", () => {
       ["Show the diff", false],
       ["Status", false],
     ]);
-    expect(defaultFocus(row.items)).toBe(0);
+    expect(row.items[0]?.best).toBe(true);
   });
 
   it("keeps Continue first after an interrupt and still offers the model's picks", () => {
     const row = rowFor({ ...base, state: "interrupted", ai: { status: "ready", replies } });
     expect(row.items[0]).toMatchObject({ label: "Continue", primary: true, best: false });
-    expect(defaultFocus(row.items)).toBe(1);
+    expect(row.items[1]?.best).toBe(true);
   });
 
   it("passes best to the next pick when the best one is dismissed", () => {

@@ -408,8 +408,6 @@ export interface RowInput {
 export interface Row {
   mode: RowMode;
   items: RowItem[];
-  /** Show the card above the chips: what the focused chip sends, and why. */
-  spotlight: boolean;
 }
 
 /** Habits shown while the agent works, before the any-time chips. */
@@ -493,7 +491,7 @@ export function rowFor(input: RowInput): Row {
   const anyTime = config.anyTime.map((reply) => item(reply, "any", "send"));
   const aiReady = ai.status === "ready" && ai.replies.length > 0;
 
-  if (state === "waiting") return { mode: "hidden", items: [], spotlight: false };
+  if (state === "waiting") return { mode: "hidden", items: []};
 
   if (state === "running") {
     // The usual follow-ups, waiting for the turn to end; any-time chips
@@ -502,7 +500,7 @@ export function rowFor(input: RowInput): Row {
       ...entry,
       action: "queue" as const,
     }));
-    return { mode: "queue", items: dedupe([...queued, ...anyTime], dismissed), spotlight: false };
+    return { mode: "queue", items: dedupe([...queued, ...anyTime], dismissed)};
   }
 
   // A draft narrows the row to chips that complete it.
@@ -528,7 +526,6 @@ export function rowFor(input: RowInput): Row {
           // Completing a draft never sends, so a snippet with fill-ins is safe too.
           action: "complete",
         })),
-        spotlight: true,
       };
   }
 
@@ -536,7 +533,7 @@ export function rowFor(input: RowInput): Row {
     const lead = config.afterStop.map((reply, index) =>
       item(reply, index === 0 ? "retry" : "any", index === 0 ? "retry" : "send", { primary: index === 0 }),
     );
-    return { mode: "stopped", items: dedupe([...lead, ...anyTime], dismissed), spotlight: false };
+    return { mode: "stopped", items: dedupe([...lead, ...anyTime], dismissed)};
   }
 
   if (state === "interrupted" || state === "finished") {
@@ -551,20 +548,14 @@ export function rowFor(input: RowInput): Row {
         const next = items.find((entry) => entry.kind !== "any" && !entry.primary);
         if (next) next.best = true;
       }
-      return { mode: "ai", items, spotlight: items.some((entry) => entry.best) };
+      return { mode: "ai", items};
     }
     const follow = state === "finished" ? take(usual(config, input.learned), QUICK_REPLY_FOLLOW_UPS, dismissed) : [];
     const items = dedupe([...lead, ...follow, ...anyTime], dismissed);
-    return {
-      mode: ai.status === "pending" ? "loading" : "baseline",
-      items,
-      // No card while the model reads: an empty card held for the whole wait
-      // (often 10 to 30 s) costs more than the card sliding in at the end.
-      spotlight: false,
-    };
+    return { mode: ai.status === "pending" ? "loading" : "baseline", items };
   }
 
-  return { mode: "baseline", items: dedupe(anyTime, dismissed), spotlight: false };
+  return { mode: "baseline", items: dedupe(anyTime, dismissed)};
 }
 
 function matchItems(items: readonly RowItem[], draft: string): RowItem[] {
@@ -580,10 +571,4 @@ function matchItems(items: readonly RowItem[], draft: string): RowItem[] {
   const word = items.filter((entry) => !prefix.includes(entry) && (starts(entry.label) || starts(entry.text)));
   // A chip that only repeats the draft completes nothing.
   return [...prefix, ...word].filter((entry) => replyKey(entry.text) !== needle);
-}
-
-/** The chip the card shows when nothing is hovered or focused. */
-export function defaultFocus(items: readonly RowItem[]): number {
-  const best = items.findIndex((entry) => entry.best);
-  return best === -1 ? 0 : best;
 }

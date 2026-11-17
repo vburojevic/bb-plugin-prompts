@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
-import { act, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import { QuickReplies } from "./quick-replies";
 
@@ -201,7 +201,6 @@ describe("QuickReplies, without AI", () => {
       settings: { quickReplyTap: "fill" },
     });
     const chip = await slot.findByRole("button", { name: "Add to draft: keep going" });
-    expect(chip.getAttribute("title")).toBe("keep going");
     fireEvent.click(chip);
     await waitFor(() => expect(slot.inspection.composer.text).toBe("keep going"));
     expect(retryCalls).toHaveLength(0);
@@ -242,7 +241,7 @@ describe("QuickReplies, with AI", () => {
     });
   });
 
-  it("leads with the best next step and shows what it sends and why", async () => {
+  it("leads with the best next step and shows nothing more until asked", async () => {
     const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
     await waitFor(() =>
       expect(chipTexts(slot).map((text) => text?.replace(/⌥\d|Alt\+\d/, ""))).toEqual([
@@ -252,11 +251,17 @@ describe("QuickReplies, with AI", () => {
         "Progress",
       ]),
     );
-    expect(slot.container.textContent).toContain("Best next step");
-    expect(slot.container.textContent).toContain(
-      "fix the date parser first, then rerun the import tests",
-    );
-    expect(slot.container.textContent).toContain("Answers the agent's question");
+    expect(chipTexts(slot)[0]).toMatch(/⌥1|Alt\+1/);
+    expect(screen.queryByText("Best next step")).toBeNull();
+    expect(screen.queryByText("Answers the agent's question")).toBeNull();
+  });
+
+  it("opens a chip's details after a short hover: what it sends, and why", async () => {
+    const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
+    fireEvent.mouseEnter(await slot.findByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" }));
+    expect(await screen.findByText("Best next step")).toBeTruthy();
+    expect(screen.getByText("fix the date parser first, then rerun the import tests")).toBeTruthy();
+    expect(screen.getByText("Answers the agent's question")).toBeTruthy();
   });
 
   it("sends the full prompt, not the label, and learns from the tap", async () => {
@@ -276,20 +281,19 @@ describe("QuickReplies, with AI", () => {
     );
   });
 
-  it("previews the chip under the pointer", async () => {
+  it("shows the details of the chip under the pointer", async () => {
     const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
     fireEvent.mouseEnter(
       await slot.findByRole("button", { name: "Send: paste the failing input for the date parser" }),
     );
-    await waitFor(() =>
-      expect(slot.container.textContent).toContain("The agent has not shown it"),
-    );
-    expect(slot.container.textContent).toContain("Suggested");
+    expect(await screen.findByText("The agent has not shown it")).toBeTruthy();
+    expect(screen.getByText("Suggested")).toBeTruthy();
   });
 
   it("puts a reply in the composer to edit instead of sending it", async () => {
     const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
-    fireEvent.click(await slot.findByRole("button", { name: "Edit" }));
+    fireEvent.mouseEnter(await slot.findByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
     await waitFor(() =>
       expect(slot.inspection.composer.text).toBe(
         "fix the date parser first, then rerun the import tests",
@@ -300,11 +304,12 @@ describe("QuickReplies, with AI", () => {
 
   it("drops a dismissed reply, passes best on and remembers the dismissal", async () => {
     const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
-    fireEvent.click(await slot.findByRole("button", { name: "Dismiss: Fix the parser first" }));
+    fireEvent.mouseEnter(await slot.findByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Dismiss: Fix the parser first" }));
     await waitFor(() =>
       expect(chipTexts(slot)[0]?.replace(/⌥\d|Alt\+\d/, "")).toBe("Show the failing case"),
     );
-    expect(slot.container.textContent).toContain("Best next step");
+    expect(chipTexts(slot)[0]).toMatch(/⌥1|Alt\+1/);
     await waitFor(() => expect(calls(slot, "quickReplyFeedback")[0]?.input).toMatchObject({ action: "dismiss" }));
   });
 
@@ -328,7 +333,8 @@ describe("QuickReplies, with AI", () => {
         "Fix all failing tests",
       ]),
     );
-    expect(slot.container.textContent).toContain("Completes your draft");
+    fireEvent.mouseEnter(slot.getByRole("button", { name: "Add to draft: fix the date parser first, then rerun the import tests" }));
+    expect(await screen.findByText("Completes your draft")).toBeTruthy();
     fireEvent.click(slot.getByRole("button", { name: "Add to draft: fix all failing tests" }));
     await waitFor(() => expect(slot.inspection.composer.text).toBe("fix all failing tests"));
     expect(slot.inspection.composer.submits).toHaveLength(0);
@@ -336,7 +342,7 @@ describe("QuickReplies, with AI", () => {
 
   it("joins a draft that matches nothing", async () => {
     const { slot } = render({ text: "half a thought", ai: { status: "ready", replies: AI_REPLIES } });
-    await slot.findByText("Best next step");
+    await slot.findByRole("button", { name: "Add to draft: fix the date parser first, then rerun the import tests" });
     fireEvent.click(slot.getByRole("button", { name: "Add to draft: ship the build" }));
     await waitFor(() => expect(slot.inspection.composer.text).toContain("ship the build"));
     expect(slot.inspection.composer.text).toContain("half a thought");
@@ -379,24 +385,26 @@ describe("QuickReplies, with AI", () => {
     const usual = await slot.findByRole("button", { name: "Send: write the docs" });
     fireEvent.mouseMove(usual.closest("[data-quick-replies]")!);
     await new Promise((resolve) => setTimeout(resolve, 150));
-    expect(slot.queryByText("Best next step")).toBeNull();
+    expect(slot.queryByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" })).toBeNull();
     // A resting pointer does not keep them away for long.
-    expect(await slot.findByText("Best next step", {}, { timeout: 2_000 })).toBeTruthy();
+    expect(await slot.findByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" }, { timeout: 2_000 })).toBeTruthy();
   });
 
-  it("says Add to draft on the card when a tap would only join the draft", async () => {
+  it("says Add to draft in the details when a tap would only join the draft", async () => {
     const { slot } = render({ text: "half a thought", ai: { status: "ready", replies: AI_REPLIES } });
-    await slot.findByText("Best next step");
-    expect(slot.getByRole("button", { name: "Add to draft" })).toBeTruthy();
-    expect(slot.queryByRole("button", { name: "Send" })).toBeNull();
+    fireEvent.mouseEnter(
+      await slot.findByRole("button", { name: "Add to draft: fix the date parser first, then rerun the import tests" }),
+    );
+    expect(await screen.findByRole("button", { name: "Add to draft" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
   });
 
   it("keeps keyboard focus in the row after a keyboard dismissal", async () => {
     const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
-    const dismiss = await slot.findByRole("button", { name: "Dismiss: Fix the parser first" });
-    dismiss.focus();
-    // A keyboard activation reports detail 0.
-    fireEvent.click(dismiss, { detail: 0 });
+    const best = await slot.findByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" });
+    best.focus();
+    // Delete on a focused chip dismisses it.
+    fireEvent.keyDown(best, { key: "Delete" });
     await waitFor(() =>
       expect(document.activeElement?.getAttribute("aria-label")).toBe(
         "Send: paste the failing input for the date parser",
@@ -408,7 +416,7 @@ describe("QuickReplies, with AI", () => {
     const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES }, aiDelayMs: 1_400 });
     const usual = await slot.findByRole("button", { name: "Send: write the docs" });
     usual.focus();
-    expect(await slot.findByText("Best next step", {}, { timeout: 4_000 })).toBeTruthy();
+    expect(await slot.findByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" }, { timeout: 4_000 })).toBeTruthy();
     expect(document.activeElement?.closest('[role="toolbar"]')).not.toBeNull();
   });
 
