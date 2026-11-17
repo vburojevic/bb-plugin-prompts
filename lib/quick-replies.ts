@@ -9,6 +9,7 @@
 // - the user's chip lists from settings, one chip per line;
 // - the short prompts the user types most, learned from local prompt history.
 
+import { isReplyTopic, topicOf, type ReplyTopic } from "./reply-topics";
 import { isMachinePrompt } from "./suggest";
 
 export interface QuickReply {
@@ -386,11 +387,10 @@ export type RowKind = "answer" | "ai" | "habit" | "snippet" | "any" | "retry";
 
 /**
  * What a tap does. `send` sends (or joins a draft), `retry` re-runs the
- * failed turn, `queue` waits in this plugin's queue for the turn to end,
- * `complete` replaces the draft it matched, `fill` opens a snippet with
- * fill-ins in the composer instead of sending it.
+ * failed turn, `complete` replaces the draft it matched, `fill` opens a
+ * snippet with fill-ins in the composer instead of sending it.
  */
-export type RowAction = "send" | "retry" | "queue" | "complete" | "fill";
+export type RowAction = "send" | "retry" | "complete" | "fill";
 
 export interface RowItem {
   label: string;
@@ -403,19 +403,22 @@ export interface RowItem {
   /** Leads after a stop (Continue, retry): the accent outline. */
   primary: boolean;
   action: RowAction;
+  /** What it asks for, which picks its icon; null keeps the source's icon. */
+  topic: ReplyTopic | null;
 }
 
 /**
- * - `hidden`: the agent asked something; its answer form owns the composer.
- * - `baseline`: the user's usual chips, no model involved.
- * - `loading`: the usual chips while the model reads the thread; a quiet
- *   "Reading the thread" sits at the row's end until the picks land.
+ * - `hidden`: the agent is working, or asked something and its answer form
+ *   owns the composer.
+ * - `baseline`: the user's usual chips, no model involved: suggestions are
+ *   off, or the model could not answer.
+ * - `loading`: the model reads the finished turn. No chips: a quiet line
+ *   holds the row until every pick lands at once.
  * - `ai`: the model's picks.
- * - `queue`: the agent is working; chips wait for the turn to end.
  * - `filter`: chips that complete the draft.
  * - `stopped`: a failed turn; Retry leads.
  */
-export type RowMode = "hidden" | "baseline" | "loading" | "ai" | "queue" | "filter" | "stopped";
+export type RowMode = "hidden" | "baseline" | "loading" | "ai" | "filter" | "stopped";
 
 export interface AiReplyLike {
   label: string;
@@ -423,6 +426,8 @@ export interface AiReplyLike {
   kind: "answer" | "ai" | "habit" | "snippet";
   why: string;
   best: boolean;
+  /** The model's topic; replies cached before topics have none. */
+  topic?: string | null;
 }
 
 export type AiStatus = "idle" | "off" | "empty" | "pending" | "ready" | "error";
@@ -443,8 +448,6 @@ export interface Row {
   items: RowItem[];
 }
 
-/** Habits shown while the agent works, before the any-time chips. */
-export const QUEUE_CHIPS = 4;
 
 const hasFillIns = (text: string) => /\{\{\s*[^}]+\}\}/.test(text);
 
@@ -452,7 +455,7 @@ function item(
   reply: QuickReply,
   kind: RowKind,
   action: RowAction,
-  extra: Partial<Pick<RowItem, "why" | "best" | "primary">> = {},
+  extra: Partial<Pick<RowItem, "why" | "best" | "primary" | "topic">> = {},
 ): RowItem {
   return {
     label: reply.label,
@@ -462,6 +465,7 @@ function item(
     best: extra.best ?? false,
     primary: extra.primary ?? false,
     action: kind === "snippet" && action === "send" && hasFillIns(reply.text) ? "fill" : action,
+    topic: extra.topic ?? topicOf(reply.text) ?? topicOf(reply.label),
   };
 }
 
@@ -510,6 +514,7 @@ function aiItems(replies: readonly AiReplyLike[]): RowItem[] {
     item({ label: reply.label, text: reply.text }, reply.kind, "send", {
       why: reply.why,
       best: reply.best,
+      ...(isReplyTopic(reply.topic) ? { topic: reply.topic } : {}),
     }),
   );
 }
@@ -524,17 +529,12 @@ export function rowFor(input: RowInput): Row {
   const anyTime = config.anyTime.map((reply) => item(reply, "any", "send"));
   const aiReady = ai.status === "ready" && ai.replies.length > 0;
 
-  if (state === "waiting") return { mode: "hidden", items: []};
-
-  if (state === "running") {
-    // The usual follow-ups, waiting for the turn to end; any-time chips
-    // (Status) still send at once.
-    const queued = take(usual(config, input.learned), QUEUE_CHIPS, dismissed).map((entry) => ({
-      ...entry,
-      action: "queue" as const,
-    }));
-    return { mode: "queue", items: dedupe([...queued, ...anyTime], dismissed)};
-  }
+  // While the agent works the row stays out of the way; a reply typed now
+  // goes through the composer as usual.
+  if (state === "waiting" || state === "running") return { mode: "hidden", items: [] };
+  // Before any turn, or while the thread's state loads, there is nothing to
+  // reply to: no row, rather than one that flashes and changes.
+  if (state === "unknown") return { mode: "hidden", items: [] };
 
   // A draft narrows the row to chips that complete it.
   const draft = input.draft.trim();
@@ -566,7 +566,7 @@ export function rowFor(input: RowInput): Row {
     const lead = config.afterStop.map((reply, index) =>
       item(reply, index === 0 ? "retry" : "any", index === 0 ? "retry" : "send", { primary: index === 0 }),
     );
-    return { mode: "stopped", items: dedupe([...lead, ...anyTime], dismissed)};
+    return { mode: "stopped", items: dedupe(lead, dismissed) };
   }
 
   if (state === "interrupted" || state === "finished") {
@@ -575,20 +575,27 @@ export function rowFor(input: RowInput): Row {
         ? config.afterStop.slice(0, 1).map((reply) => item(reply, "any", "send", { primary: true }))
         : [];
     if (aiReady) {
-      const items = dedupe([...lead, ...aiItems(ai.replies), ...anyTime], dismissed);
+      // The model's picks stand on their own: the any-time chips (Status)
+      // are for when there are none.
+      const items = dedupe([...lead, ...aiItems(ai.replies)], dismissed);
       // Dismissing the best one passes "best" to the next model pick.
       if (!items.some((entry) => entry.best)) {
         const next = items.find((entry) => entry.kind !== "any" && !entry.primary);
         if (next) next.best = true;
       }
-      return { mode: "ai", items};
+      // Every pick dismissed: the usual chips take over, and with them the
+      // row's way to ask again.
+      if (items.length > 0) return { mode: "ai", items };
     }
+    // The picks are on their way (or the read has not started): nothing
+    // older shows first, so they arrive together.
+    if (ai.status === "pending" || ai.status === "idle") return { mode: "loading", items: [] };
     const follow = state === "finished" ? take(usual(config, input.learned), QUICK_REPLY_FOLLOW_UPS, dismissed) : [];
     const items = dedupe([...lead, ...follow, ...anyTime], dismissed);
-    return { mode: ai.status === "pending" ? "loading" : "baseline", items };
+    return { mode: "baseline", items };
   }
 
-  return { mode: "baseline", items: dedupe(anyTime, dismissed)};
+  return { mode: "baseline", items: dedupe(anyTime, dismissed) };
 }
 
 function matchItems(items: readonly RowItem[], draft: string): RowItem[] {

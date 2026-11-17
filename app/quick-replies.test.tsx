@@ -236,13 +236,11 @@ describe("QuickReplies, without AI", () => {
 });
 
 describe("QuickReplies, with AI", () => {
-  it("shows the usual chips while the model reads the thread", async () => {
+  it("holds the row with a quiet line, not older chips, while the model reads the thread", async () => {
     const { slot } = render({ ai: { status: "pending" } });
-    await waitFor(() =>
-      expect(chipTexts(slot)).toEqual(["Write the docs", "Ship the build", "Progress"]),
-    );
-    expect((await slot.findByRole("status")).textContent).toContain("Reading the thread");
-    expect(slot.queryByText("Best next step")).toBeNull();
+    expect((await slot.findByRole("status")).textContent).toBe("Suggesting replies");
+    expect(slot.queryByRole("toolbar")).toBeNull();
+    expect(slot.queryByText("Write the docs")).toBeNull();
     expect(calls(slot, "aiQuickReplies")[0]?.input).toEqual({
       threadId: THREAD,
       outcome: "finished",
@@ -257,10 +255,10 @@ describe("QuickReplies, with AI", () => {
         "Fix the parser first",
         "Show the failing case",
         "Ship the build",
-        "Progress",
       ]),
     );
     expect(chipTexts(slot)[0]).toMatch(/⌥1|Alt\+1/);
+    expect(slot.queryByRole("status")).toBeNull();
     expect(screen.queryByText("Best next step")).toBeNull();
     expect(details()).toBeNull();
   });
@@ -326,7 +324,11 @@ describe("QuickReplies, with AI", () => {
 
   it("asks the model again on regenerate", async () => {
     const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
-    fireEvent.click(await slot.findByRole("button", { name: "Suggest again" }));
+    await slot.findByRole("button", { name: BEST });
+    fireEvent.click(slot.getByRole("button", { name: "Suggest again" }));
+    // The old picks give way to the loading line at once.
+    expect(slot.queryByRole("button", { name: BEST })).toBeNull();
+    expect(slot.getByRole("status").textContent).toBe("Suggesting replies");
     await waitFor(() =>
       expect(calls(slot, "aiQuickReplies").some((call) => (call.input as { refresh: boolean }).refresh)).toBe(true),
     );
@@ -372,33 +374,17 @@ describe("QuickReplies, with AI", () => {
     expect(slot.inspection.composer.submits).toHaveLength(0);
   });
 
-  it("queues habits for the end of the turn while the agent works", async () => {
-    const { slot } = render({ isRunning: true, ai: { status: "ready", replies: AI_REPLIES } });
-    fireEvent.click(await slot.findByRole("button", { name: "Queue: write the docs" }));
-    await waitFor(() =>
-      expect(calls(slot, "addPrompt")[0]?.input).toEqual({
-        scope: "thread",
-        threadId: THREAD,
-        projectId: PROJECT,
-        text: "write the docs",
-        autoSend: true,
-      }),
-    );
-    expect(slot.inspection.composer.submits).toHaveLength(0);
-    // The any-time chips still send at once.
-    expect(slot.getByRole("button", { name: "Send: progress?" })).toBeTruthy();
+  it("stays out of the way while the agent works, and never asks the model there", async () => {
+    const { slot } = render({ isRunning: true, status: "active", ai: { status: "ready", replies: AI_REPLIES } });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(slot.container.querySelector("[data-quick-replies]")).toBeNull();
     expect(calls(slot, "aiQuickReplies")).toHaveLength(0);
   });
 
-  it("holds the model's picks while the user is moving over the row, not after", async () => {
-    const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES }, aiDelayMs: 80 });
-    // The usual chips render before the model's answer is read.
-    const usual = await slot.findByRole("button", { name: "Send: write the docs" });
-    fireEvent.mouseMove(usual.closest("[data-quick-replies]")!);
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    expect(slot.queryByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" })).toBeNull();
-    // A resting pointer does not keep them away for long.
-    expect(await slot.findByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" }, { timeout: 2_000 })).toBeTruthy();
+  it("brings the picks in one after another", async () => {
+    const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
+    await slot.findByRole("button", { name: BEST });
+    expect(chips(slot).map((chip) => chip.style.animationDelay)).toEqual(["0ms", "70ms", "140ms"]);
   });
 
   it("says Add to draft in the details when a tap would only join the draft", async () => {
@@ -450,9 +436,8 @@ describe("QuickReplies, with AI", () => {
   });
 
   it("offers Dismiss on the user's own chips too", async () => {
-    const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES } });
-    await slot.findByRole("button", { name: BEST });
-    hover(slot.getByRole("button", { name: "Send: progress?" }));
+    const { slot } = render({ settings: { quickRepliesAi: "off" } });
+    hover(await slot.findByRole("button", { name: "Send: progress?" }));
     expect(await screen.findByRole("button", { name: "Dismiss: Progress" })).toBeTruthy();
   });
 
@@ -469,12 +454,16 @@ describe("QuickReplies, with AI", () => {
     );
   });
 
-  it("keeps keyboard focus in the row when the model's picks land", async () => {
-    const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES }, aiDelayMs: 1_400 });
-    const usual = await slot.findByRole("button", { name: "Send: write the docs" });
-    usual.focus();
-    expect(await slot.findByRole("button", { name: "Send: fix the date parser first, then rerun the import tests" }, { timeout: 4_000 })).toBeTruthy();
-    expect(document.activeElement?.closest('[role="toolbar"]')).not.toBeNull();
+  it("keeps keyboard focus on regenerate while the new picks load and land", async () => {
+    const { slot } = render({ ai: { status: "ready", replies: AI_REPLIES }, aiDelayMs: 300 });
+    const again = await slot.findByRole("button", { name: "Suggest again" }, { timeout: 2_000 });
+    await slot.findByRole("button", { name: BEST }, { timeout: 2_000 });
+    again.focus();
+    fireEvent.click(again);
+    expect(await slot.findByRole("status")).toBeTruthy();
+    expect(document.activeElement).toBe(again);
+    await slot.findByRole("button", { name: BEST }, { timeout: 2_000 });
+    expect(document.activeElement).toBe(again);
   });
 
   it("leaves focus alone once the user clicked away from the row and started typing", async () => {

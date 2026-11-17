@@ -99,14 +99,14 @@ export default function plugin(bb: BbPluginApi) {
       type: "boolean",
       label: "Quick replies",
       description:
-        "A row of one-tap prompts above a thread's composer that fits the thread's state.",
+        "A row of one-tap prompts above a thread's composer after each turn. It stays hidden while the agent works.",
       default: true,
     },
     quickRepliesAi: {
       type: "select",
       label: "Suggest quick replies with AI",
       description:
-        "When a turn finishes in a thread you have open, the thread's own provider reads the end of the conversation with its fastest model (Haiku 5.5 on Claude Code) and suggests what to send next, mixed with your usual prompts and snippets when they fit. Off shows your usual chips only. Threads you never open never call a model.",
+        "When a turn finishes in a thread you have open, the thread's own provider reads the end of the conversation with its fastest model (Haiku 5.5 on Claude Code, gpt-6-luna on Codex) and suggests what to send next, with your usual prompts and snippets when they fit. The row waits for the suggestions and shows them together. Off shows your usual chips only. Threads you never open never call a model.",
       options: ["on", "off"],
       default: "on",
     },
@@ -139,14 +139,14 @@ export default function plugin(bb: BbPluginApi) {
       type: "string",
       label: "After a finished turn",
       description:
-        "One per line. Leave empty to show the short prompts you type most, learned from prompt history on this machine (needs snippet suggestions on).",
+        "One per line. Shown when AI suggestions are off or could not answer. Leave empty to show the short prompts you type most, learned from prompt history on this machine (needs snippet suggestions on).",
       experimental_multiline: true,
       default: "",
     },
     quickRepliesAnyTime: {
       type: "string",
-      label: "Any time",
-      description: "One per line. Shown in every state, also while the agent works.",
+      label: "Without AI suggestions",
+      description: "One per line. Shown after your usual chips when AI suggestions are off or could not answer, and offered as you type.",
       experimental_multiline: true,
       default: DEFAULT_ANY_TIME,
     },

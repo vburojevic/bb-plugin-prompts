@@ -195,6 +195,31 @@ describe("parseSuggestReply", () => {
     expect(replies[1]).toMatchObject({ best: false, why: "Not shown yet" });
   });
 
+  it("keeps the model's topic when it is one of the list, and none otherwise", () => {
+    const raw = JSON.stringify({
+      replies: [
+        { kind: "ai", label: "Run the import tests", text: "rerun the import tests", why: "", topic: "test", best: true },
+        { kind: "ai", label: "Show the diff", text: "show me the diff", why: "", topic: "rocket" },
+      ],
+    });
+    expect(parseSuggestReply(raw, context).map((reply) => reply.topic)).toEqual(["test", null]);
+  });
+
+  it("asks the model for a topic from the list", () => {
+    const prompt = buildSuggestPrompt({
+      title: null,
+      outcome: "finished",
+      messages: [{ role: "agent", text: "Done." }],
+      habits: [],
+      snippets: [],
+      voice: [],
+      avoid: [],
+      limit: 5,
+    });
+    expect(prompt).toContain("- topic: the one word that names what the reply asks the agent to do");
+    expect(prompt).toContain("continue (keep going with the work), status (ask how far along it is)");
+  });
+
   it("sends a habit in the user's own spelling and a snippet's saved body", () => {
     const replies = parseSuggestReply(
       JSON.stringify({

@@ -81,10 +81,10 @@ function render(answer: () => Promise<unknown>) {
   );
 }
 
-const chipTexts = (slot: ReturnType<typeof renderSlot>) =>
-  within(slot.getByRole("toolbar"))
-    .getAllByRole("button")
-    .map((button) => button.textContent);
+const chipTexts = (slot: ReturnType<typeof renderSlot>) => {
+  const toolbar = slot.queryByRole("toolbar");
+  return toolbar ? within(toolbar).getAllByRole("button").map((button) => button.textContent) : [];
+};
 
 it("shows the next turn's picks, not the last turn's, while the pointer moves over the row", async () => {
   let answer: unknown = { status: "ready", turnKey: "msg_1", replies: OLD, error: null, model: "m" };
@@ -107,6 +107,8 @@ it("never shows the last turn's picks while the next turn's read is on its way",
   });
   await slot.findByText("Old turn pick");
   await act(async () => setRun({ running: true, status: "active" }));
+  // Out of the way while the agent works.
+  expect(slot.container.querySelector("[data-quick-replies]")).toBeNull();
   delay = 300;
   answer = { status: "ready", turnKey: "msg_2", replies: NEW, error: null, model: "m" };
   await act(async () => setRun({ running: false, status: "idle" }));
@@ -114,5 +116,11 @@ it("never shows the last turn's picks while the next turn's read is on its way",
     await new Promise((resolve) => setTimeout(resolve, 50));
   });
   expect(chipTexts(slot).join()).not.toContain("Old turn pick");
+  // The row holds its place with nothing older in it; the loading line waits
+  // for the server to say the model is at work, so a saved answer never
+  // flashes it.
+  expect(slot.container.querySelector("[data-quick-replies]")?.getAttribute("data-quick-replies")).toBe("loading");
+  expect(slot.queryByRole("status")).toBeNull();
+  expect(chipTexts(slot)).toEqual([]);
   expect(await slot.findByText("New turn pick")).toBeTruthy();
 });
