@@ -481,8 +481,12 @@ export function rowFor(input: RowInput): Row {
   if (state === "waiting") return { mode: "hidden", items: [], spotlight: false };
 
   if (state === "running") {
-    const habits = input.learned.slice(0, QUEUE_CHIPS).map((reply) => item(reply, "habit", "queue"));
-    return { mode: "queue", items: dedupe([...habits, ...anyTime], dismissed), spotlight: false };
+    // The usual follow-ups, waiting for the turn to end; any-time chips
+    // (Status) still send at once.
+    const queued = usual(config, input.learned)
+      .slice(0, QUEUE_CHIPS)
+      .map((entry) => ({ ...entry, action: "queue" as const }));
+    return { mode: "queue", items: dedupe([...queued, ...anyTime], dismissed), spotlight: false };
   }
 
   // A draft narrows the row to chips that complete it.

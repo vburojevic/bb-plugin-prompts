@@ -54,6 +54,9 @@ export interface Transcript {
   turnKey: string | null;
 }
 
+const PROVIDER_ERROR =
+  /^(failed to authenticate|api error|provider error|request failed|rate limit|overloaded|you've hit your limit|credit balance)/i;
+
 /** The newest agent reply keeps this much; it is what the user answers. */
 const LAST_REPLY_CAP = 6_000;
 const EARLIER_REPLY_CAP = 1_200;
@@ -105,7 +108,9 @@ export function transcriptFromEvents(
     if (!item || item.parentToolCallId) continue;
     if (item.type === "agentMessage") {
       const text = String(item.text ?? "").trim();
-      if (!text) continue;
+      // A provider error shown as the agent's text belongs to a failed turn a
+      // later one moved past; offered to the model, it suggests fixing it.
+      if (!text || PROVIDER_ERROR.test(text)) continue;
       if (turnKey === null && typeof item.id === "string") turnKey = item.id;
       const first = !newestFirst.some((message) => message.role === "agent");
       newestFirst.push({ role: "agent", text: clip(text, first ? LAST_REPLY_CAP : EARLIER_REPLY_CAP) });
@@ -180,7 +185,9 @@ export function buildSuggestPrompt(input: SuggestPromptInput): string {
     .join("\n");
 
   return [
-    "You write quick replies: the next messages a user is most likely to send to their coding agent, shown as one-tap chips above the message box.",
+    // "You are …" also keeps this prompt out of snippet mining, which skips
+    // machine-written briefings (suggest.ts, MACHINE_PATTERNS).
+    "You are writing quick replies: the next messages a user is most likely to send to their coding agent, shown as one-tap chips above the message box.",
     "Answer from the text below only. Do not use tools, read files or run commands. Do not do the work the conversation is about.",
     "",
     `Thread: ${input.title ? quote(input.title) : "untitled"}`,
@@ -209,6 +216,7 @@ export function buildSuggestPrompt(input: SuggestPromptInput): string {
     '- Write replies specific to this thread, kind "ai": name the files, tests, errors and decisions from the conversation.',
     '- Add a habit (kind "habit", text exactly as listed) or a snippet (kind "snippet", with its id) only when it clearly fits what should happen next.',
     "- Never suggest something the agent already did, something the user ruled out, or anything dismissed.",
+    "- Only the latest state counts: an error or question that a later message moved past is settled.",
     "- label: 2 to 5 words, sentence case, no final period.",
     "- text: the full message to send, written the way this user writes: short and direct, lowercase is fine, spelled correctly, no greeting, under 240 characters.",
     "- why: one short line on why it fits now, under 90 characters.",

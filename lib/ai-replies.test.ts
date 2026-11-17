@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { isMachinePrompt } from "./suggest";
 import {
   buildSuggestPrompt,
   clip,
@@ -103,6 +104,18 @@ describe("transcriptFromEvents", () => {
     expect(transcript.messages).toEqual([{ role: "agent", text: "Summary for you." }]);
   });
 
+  it("leaves out a provider error that a retried turn moved past", () => {
+    const transcript = transcriptFromEvents([
+      agent("a2", "It rejects times. Keep the time part, or strip it?"),
+      agent("a1", "Failed to authenticate: this login reached its time limit."),
+      user("check the date parser"),
+    ]);
+    expect(transcript.messages.map((message) => message.text)).toEqual([
+      "check the date parser",
+      "It rejects times. Keep the time part, or strip it?",
+    ]);
+  });
+
   it("has nothing to follow up on while a new turn starts", () => {
     expect(transcriptFromEvents([user("next please"), agent("a1", "Done.")]).turnKey).toBeNull();
     expect(transcriptFromEvents([]).turnKey).toBeNull();
@@ -137,6 +150,8 @@ describe("buildSuggestPrompt", () => {
     expect(prompt).toContain('"write a changelog"');
     expect(prompt).toContain("Do not use tools");
     expect(prompt).toContain('{"replies":[');
+    // Helper threads' prompts can reach prompt history; mining must skip them.
+    expect(isMachinePrompt(prompt)).toBe(true);
   });
 
   it("says when the user stopped the turn", () => {

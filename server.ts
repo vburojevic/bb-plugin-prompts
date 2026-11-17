@@ -16,9 +16,8 @@
 // A thread ending is not the end of its prompts: they move to the project's
 // queue, so the next session in that project still has the user's writing.
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import {
   parseModelOverrides,
@@ -49,8 +48,6 @@ import { parseTokens } from "./lib/template";
 export { rpcContract } from "./lib/contract";
 
 const REALTIME_CHANNEL = "prompts";
-/** Where hidden quick-reply helper threads run: an empty folder, not a checkout. */
-const HELPER_DIR = join(tmpdir(), "bb-prompts-quick-replies");
 const DEFAULT_IDLE_DELAY_SECONDS = 20;
 /** Prompt-history entries pulled per project/thread when mining for suggestions. */
 const HISTORY_LIMIT = 500;
@@ -382,17 +379,35 @@ export default function plugin(bb: BbPluginApi) {
     return "";
   }
 
+  /** bb's implicit personal project: the only home for a personal workspace. */
+  let personalProject: string | null = null;
+  async function personalProjectId(): Promise<string> {
+    if (personalProject !== null) return personalProject;
+    const projects = await bb.sdk.projects.list({ includePersonal: true });
+    const personal = projects.find(
+      (project) => (project as { kind?: string }).kind === "personal",
+    );
+    if (!personal) throw new Error("bb has no personal project for a helper thread");
+    personalProject = personal.id;
+    return personal.id;
+  }
+
   async function runHidden(request: ModelRequest, signal: AbortSignal): Promise<string> {
     const { thread } = request;
-    if (thread.projectId === null)
-      throw new Error("This thread has no project a helper thread could run in");
-    // An empty folder of its own, never the user's checkout: the helper only
-    // reads the prompt, and a small model that reaches for a tool anyway finds
-    // nothing to change.
-    await mkdir(HELPER_DIR, { recursive: true });
+    // On the thread's own machine, where its provider is installed and signed
+    // in, in a fresh projectless workspace bb owns: never the user's checkout.
+    // The helper only reads its prompt; a small model that reaches for a tool
+    // anyway finds nothing of the user's to change.
+    const hostId =
+      thread.environmentId === null
+        ? undefined
+        : await bb.sdk.environments
+            .get({ environmentId: thread.environmentId })
+            .then((environment) => (environment as { hostId?: string }).hostId)
+            .catch(() => undefined);
     const child = await bb.sdk.threads.spawn({
-      projectId: thread.projectId,
-      environment: { type: "host", workspace: { type: "unmanaged", path: HELPER_DIR } },
+      projectId: await personalProjectId(),
+      environment: { type: "host", ...(hostId ? { hostId } : {}), workspace: { type: "personal" } },
       providerId: request.providerId,
       ...(request.model ? { model: request.model } : {}),
       ...(request.reasoningLevel ? { reasoningLevel: request.reasoningLevel } : {}),
@@ -431,9 +446,19 @@ export default function plugin(bb: BbPluginApi) {
       });
       return await lastAgentText(childId);
     } finally {
+      // The helper, and the personal workspace bb made for it, go away at
+      // once: nothing piles up in the thread list or on disk.
       void (async () => {
+        const childEnvironment = await bb.sdk.threads
+          .get({ threadId: childId })
+          .then((row) => (row as { environmentId?: string | null }).environmentId ?? null)
+          .catch(() => null);
         await bb.sdk.threads.stop({ threadId: childId }).catch(() => {});
         await bb.sdk.threads.delete({ threadId: childId, childThreadsConfirmed: true }).catch(() => {});
+        if (childEnvironment !== null)
+          await bb.sdk.environments.delete({ environmentId: childEnvironment }).catch((error) => {
+            if (!disposed) bb.log.warn(`quick replies: helper workspace cleanup failed: ${errorText(error)}`);
+          });
       })();
     }
   }

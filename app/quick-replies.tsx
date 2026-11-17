@@ -17,7 +17,6 @@
 // chip joins the draft instead, so a half-written prompt is never sent.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  experimental_ShortcutHint as ShortcutHint,
   experimental_useSidebarThreads,
   useComposer,
   useRpc,
@@ -56,7 +55,7 @@ const TURN_EVENT_TYPES = [
 ] as const;
 
 const KIND_ICON: Record<RowKind, IconName | null> = {
-  answer: "Reply",
+  answer: "ArrowTurnBackward",
   ai: "Sparkles",
   habit: "History",
   snippet: "Bookmark",
@@ -94,6 +93,22 @@ const IS_MAC =
 function shortcutFor(index: number) {
   const key = String(index + 1);
   return { ariaKeyshortcuts: `Alt+${key}`, label: IS_MAC ? `⌥${key}` : `Alt+${key}` };
+}
+
+/** A keycap for a chip's shortcut; hidden on touch, where there is no keyboard. */
+function Keycap({ index, className }: { index: number; className?: string }) {
+  return (
+    <kbd
+      aria-hidden
+      className={cn(
+        "rounded-[4px] px-1 font-mono text-[10px] leading-4 tracking-tight shadow-[inset_0_0_0_1px_currentColor] opacity-60",
+        "max-md:pointer-coarse:hidden",
+        className,
+      )}
+    >
+      {shortcutFor(index).label}
+    </kbd>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -563,7 +578,7 @@ export function QuickReplies() {
                   : retries
                     ? "Retry the failed turn"
                     : "Send";
-            const icon = KIND_ICON[chip.action === "queue" ? "habit" : chip.kind];
+            const icon: IconName | null = chip.action === "queue" ? "Clock" : KIND_ICON[chip.kind];
             const showHint = index < QUICK_REPLY_SHORTCUTS && (chip.best || altHeld);
             return (
               <button
@@ -611,7 +626,9 @@ export function QuickReplies() {
                     : chip.primary
                       ? "border border-primary/40 text-primary hover:bg-primary/10"
                       : "border border-border text-foreground/85 hover:bg-state-hover hover:text-foreground",
-                  index === shown && row.spotlight && !chip.best ? "bg-state-hover text-foreground" : "",
+                  index === shown && row.spotlight && row.mode !== "loading" && !chip.best
+                    ? "bg-state-hover text-foreground"
+                    : "",
                 )}
               >
                 {retries ? (
@@ -624,12 +641,7 @@ export function QuickReplies() {
                   />
                 ) : null}
                 <span>{shortLabel(chip.label)}</span>
-                {showHint ? (
-                  <ShortcutHint
-                    shortcut={shortcutFor(index)}
-                    className={cn("max-md:pointer-coarse:hidden", chip.best ? "text-background/70" : "")}
-                  />
-                ) : null}
+                {showHint ? <Keycap index={index} /> : null}
               </button>
             );
           })}
@@ -712,13 +724,16 @@ function Spotlight({
         )}
       >
         <div className="min-w-0">
-          <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground max-md:pointer-coarse:text-[13px]">
+          <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground max-md:pointer-coarse:flex-wrap max-md:pointer-coarse:gap-y-0.5 max-md:pointer-coarse:text-[13px]">
             {icon ? <Icon name={icon} className="size-3.5 shrink-0" aria-hidden /> : null}
             <span className="shrink-0 font-medium text-foreground">{eyebrow}</span>
             {chip.why ? (
               <>
-                <span aria-hidden>·</span>
-                <span className="truncate">{chip.why}</span>
+                <span aria-hidden className="max-md:pointer-coarse:hidden">·</span>
+                {/* On a phone the why gets its own line instead of an ellipsis. */}
+                <span className="truncate max-md:pointer-coarse:basis-full max-md:pointer-coarse:whitespace-normal">
+                  {chip.why}
+                </span>
               </>
             ) : null}
           </div>
@@ -754,9 +769,7 @@ function Spotlight({
             className="flex h-7 items-center justify-center gap-2 rounded-lg bg-foreground px-2.5 text-xs font-medium text-background transition-opacity duration-150 hover:opacity-90 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50 max-md:pointer-coarse:h-10 max-md:pointer-coarse:text-sm"
           >
             {verb}
-            {index < QUICK_REPLY_SHORTCUTS ? (
-              <ShortcutHint shortcut={shortcutFor(index)} className="text-background/70 max-md:pointer-coarse:hidden" />
-            ) : null}
+            {index < QUICK_REPLY_SHORTCUTS ? <Keycap index={index} /> : null}
           </button>
         </div>
       </div>

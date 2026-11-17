@@ -29,9 +29,10 @@ let them go when it is ready.
 - **Snippets**: reusable, titled prompts with `{{fill-in}}` tokens. Inserting
   one never consumes it. The plugin also reads bb's own prompt history and
   offers to turn the things you keep retyping into snippets.
-- **Quick replies**: a row of one-tap prompts above a thread's composer that
-  fits the moment. Continue after a turn stops, your usual follow-ups after it
-  finishes, Status any time.
+- **Quick replies**: the next message worth sending, one tap above the
+  composer. After a turn, the thread's own provider reads the conversation with
+  its fastest model and suggests what to send next, mixed with your usual
+  prompts and snippets when they fit. Continue after a stop, Status any time.
 
 ## Install
 
@@ -193,41 +194,69 @@ prompt with the error attached.
 
 ## Quick replies
 
-Most of what you type into a thread is short and the same every time. Quick
-replies put those prompts one tap away, in a row above the composer that
-scrolls sideways on a phone and follows the thread's state:
+The row above a thread's composer offers the messages you are most likely to
+send next. When a turn finishes in the thread you have open, the thread's own
+provider reads the end of the conversation with its fastest model and suggests
+up to five: answers when the agent asked you something, steps specific to the
+thread, and your own habits and snippets when they fit.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/quick-replies-failed-dark.png">
-  <img src="assets/screenshots/quick-replies-failed.png" width="100%" alt="After a turn failed on a rate limit, the quick-reply row above the composer leads with Continue, marked with a retry icon, followed by Status.">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/quick-replies-ai-dark.png">
+  <img src="assets/screenshots/quick-replies-ai.png" width="100%" alt="The agent asked whether to throw an error or return a result object. Above the composer, a card shows the best next step, Return a result object with the reason, with Edit and Send. Below it, a solid chip Return a result with the shortcut Option 1, then Throw an error and Status.">
 </picture>
 
-| The thread                       | The row leads with                                  |
-| -------------------------------- | --------------------------------------------------- |
-| Last turn failed (rate limit, provider error) | **Continue**, which retries the failed turn |
-| Last turn was interrupted        | **Continue**, sent as a message                     |
-| Last turn finished               | The short prompts you type most                     |
-| Agent is working                 | Only the any-time chips                             |
-| Agent asked you something        | Nothing: the answer form owns the composer          |
+**The best next step leads.** It is the solid chip, and the card above the
+chips shows exactly what it sends and why. Hover or focus another chip, or
+long-press it on a phone, and the card shows that one instead. A chip's label
+is short; what it sends is the full message, written the way you write.
 
-The any-time chips (**Status** by default) close the row in every state.
+**One tap, or one key.** Option+1 to 5 (Alt on Windows and Linux) sends that
+chip from the composer; arrow keys move along the row. **Edit** puts the
+message in the composer to change first, **Dismiss** drops it, and the arrow at
+the end asks again. Taps and dismissals are remembered per project: what you
+use rises, and what you dismiss is not suggested again.
 
-**A tap sends.** With a draft already in the composer the chip joins the draft
-instead, so a half-written prompt never goes out by accident. Set
+| The thread                       | The row                                              |
+| -------------------------------- | ---------------------------------------------------- |
+| Turn finished                    | Your usual chips at once, then the model's picks     |
+| Turn interrupted                 | **Continue**, then the model's picks                 |
+| Turn failed (rate limit, provider error) | **Continue**, which retries the failed turn  |
+| Agent is working                 | Your usual chips queue: they send when the turn ends |
+| You are typing                   | Chips that complete your draft                       |
+| Agent asked you something        | Nothing: the answer form owns the composer           |
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/quick-replies-phone-dark.png">
+    <img src="assets/screenshots/quick-replies-phone.png" width="380" alt="On a phone the card spans the width with a large Send button, and the chips scroll sideways below it.">
+  </picture>
+</p>
+
+**Which model, and what it costs.** On Claude Code it is Haiku 5.5; on Codex
+the fastest model bb's catalog lists; on any other provider the smallest one it
+offers. It runs once per finished turn, only for a thread on your screen, so a
+fleet of threads you never open never calls a model. The provider's own CLI
+answers when it is signed in; otherwise a short-lived hidden bb thread on the
+same provider does, in a scratch workspace that is deleted with it, so it works
+with bb's Account Pooler too. The conversation goes only to the provider the
+thread already uses. Pick other models with `quickRepliesModels`, or switch the
+model off with `quickRepliesAi`; the row then shows your usual chips only.
+
+**Nothing sends without a tap.** With a draft in the composer a chip joins the
+draft instead, so a half-written prompt never goes out by accident. Set
 `quickReplyTap` to `fill` to always fill the composer and press send yourself.
-Nothing is ever sent without a tap.
+A snippet with `{{fill-ins}}` always opens in the composer.
 
 **Continue after a failure retries the turn** through bb's own retry: if the
 provider never received your last message it goes again as you wrote it,
 otherwise the agent picks up where it stopped. When a retry is already queued
 (by another plugin, or an earlier tap) the chip sends its text instead.
 
-**The follow-ups are learned on your machine.** The same history scan that
+**Your usual chips are learned on your machine.** The same history scan that
 suggests snippets counts the short prompts you type (40 characters or less,
 typed at least three times) and folds typos into the spelling you use most.
-Nothing leaves the machine and nothing is stored outside the plugin's own
-database. Fill `quickRepliesAfterDone` to pick your own instead; until the
-first scan finishes, or with `mineHistory` off, generic follow-ups stand in.
+Fill `quickRepliesAfterDone` to pick your own instead; until the first scan
+finishes, or with `mineHistory` off, generic follow-ups stand in.
 
 Each list is one chip per line, `Label | text to send`, or just the text:
 
@@ -333,6 +362,8 @@ for the thread and the project.
 | `threadEnd`            | `keep for the project` | Archived or deleted thread: promote or delete |
 | `mineHistory`          | `on`                   | Scan prompt history to suggest snippets and learn quick replies |
 | `quickReplies`         | `true`                 | Show the quick-reply row above thread composers |
+| `quickRepliesAi`       | `on`                   | Ask the thread's provider for suggestions after each turn |
+| `quickRepliesModels`   | empty                  | `provider = model` per line; empty means each provider's fastest |
 | `quickReplyTap`        | `send`                 | `send` sends on tap, `fill` fills the composer |
 | `quickRepliesAfterStop` | `Continue \| continue` | Chips after a failed or interrupted turn; the first retries a failure |
 | `quickRepliesAfterDone` | empty                 | Chips after a finished turn; empty means learned from history |
@@ -367,7 +398,10 @@ lib/store.ts        SQLite: queue, snippets, thread state, fill-in values
 lib/operations.ts   send / stash / push / promote: one copy, three callers
 lib/suggest.ts      history mining: cluster, template, rank
 lib/mining.ts       the cache and the single background pass in front of it
-lib/quick-replies.ts quick replies: learn from history, read thread state, pick chips
+lib/quick-replies.ts quick replies: learn from history, read thread state, build the row
+lib/ai-replies.ts   AI quick replies: the prompt, reading the answer, model choice
+lib/ai-service.ts   one generation per thread per turn, cached, announced over realtime
+lib/model-runner.ts the provider's CLI, or a hidden bb thread when the CLI is not signed in
 lib/cli.ts          bb prompts …
 lib/agent-tools.ts  prompts_* tools
 lib/test-host.ts    a fake bb, enough to drive server.ts in tests
