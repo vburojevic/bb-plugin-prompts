@@ -2,16 +2,15 @@
 //
 // When a turn finishes in the thread on screen, the thread's own provider
 // reads the end of the conversation with its fastest model and suggests what
-// to send next, mixed with the user's habits and snippets when they fit. The
-// row shows the user's usual chips at once and swaps in the model's picks when
-// they land. The best next step leads as a solid chip, and the card above the
-// chips shows exactly what the hovered, focused or long-pressed chip sends and
-// why.
+// to send next, mixed with the user's habits and snippets when they fit. A
+// quiet line holds the row while the model reads, and the picks land
+// together. The best next step leads, a little brighter, with its Option+1
+// key; a small card shows what the hovered, focused or long-pressed chip
+// sends and why.
 //
 // Other moments: a failed turn leads with Retry, an interrupted one with
-// Continue; while the agent works, chips queue for the end of the turn; a
-// draft narrows the row to chips that complete it; while the agent waits on
-// an answer the row hides, because the answer form owns the composer.
+// Continue; a draft narrows the row to chips that complete it; while the
+// agent works, or waits on an answer, the row hides.
 //
 // Nothing sends without a tap or its shortcut. With a draft in the composer a
 // chip joins the draft instead, so a half-written prompt is never sent.
@@ -801,12 +800,12 @@ export function QuickReplies() {
                   "disabled:pointer-events-none disabled:opacity-50",
                   "animate-in fade-in-0 slide-in-from-bottom-2 zoom-in-95 fill-mode-both duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] [--tw-enter-blur:6px] motion-reduce:animate-none",
                   touchHint,
-                  chip.best
-                    ? "bg-foreground text-background hover:bg-foreground/90"
-                    : chip.primary
-                      ? "border border-primary/40 text-primary hover:bg-primary/10"
-                      : "border border-border text-foreground/85 hover:bg-state-hover hover:text-foreground",
-                  index === preview && !chip.best ? "bg-state-hover text-foreground" : "",
+                  // Every chip is the same quiet outline; the best one (and
+                  // Continue after a stop) is only a little brighter, with
+                  // its Option+1 key.
+                  "border hover:bg-state-hover hover:text-foreground",
+                  chip.best || chip.primary ? "border-foreground/30 text-foreground" : "border-border text-foreground/75",
+                  index === preview ? "bg-state-hover text-foreground" : "",
                 )}
               >
                 {retries ? (
@@ -814,7 +813,7 @@ export function QuickReplies() {
                 ) : icon ? (
                   <Icon
                     name={icon}
-                    className={cn("size-3.5 shrink-0", chip.best ? "opacity-80" : "text-muted-foreground")}
+                    className={cn("size-3.5 shrink-0", chip.best || chip.primary ? "text-foreground" : "text-muted-foreground")}
                     aria-hidden
                   />
                 ) : null}
