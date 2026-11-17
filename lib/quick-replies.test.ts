@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  chipsFor,
+  defaultFocus,
+  rowFor,
   editDistance,
   FALLBACK_FOLLOW_UPS,
   labelFor,
@@ -203,26 +204,35 @@ describe("quickReplyState", () => {
   });
 });
 
-describe("chipsFor", () => {
+describe("rowFor without AI", () => {
   const learned = learnQuickReplies([
     ...typed("write the docs", 9),
     ...typed("ship the build", 6),
   ]);
+  const chipsFor = (state: Parameters<typeof rowFor>[0]["state"], config = CONFIG, from = learned) =>
+    rowFor({
+      state,
+      config,
+      learned: from,
+      snippets: [],
+      ai: { status: "off", replies: [] },
+      draft: "",
+      dismissed: new Set(),
+    }).items;
 
   it("leads with the first after-stop chip after a failure, as a retry", () => {
-    const chips = chipsFor("failed", CONFIG, learned);
+    const chips = chipsFor("failed");
     expect(chips.map((chip) => chip.text)).toEqual(["keep going", "Try again", "progress?"]);
-    expect(chips[0]).toMatchObject({ primary: true, retry: true });
-    expect(chips[1]).toMatchObject({ primary: false, retry: false });
+    expect(chips[0]).toMatchObject({ primary: true, action: "retry" });
+    expect(chips[1]).toMatchObject({ primary: false, action: "send" });
   });
 
   it("sends text, never a retry, after an interrupt", () => {
-    const chips = chipsFor("interrupted", CONFIG, learned);
-    expect(chips[0]).toMatchObject({ text: "keep going", primary: true, retry: false });
+    expect(chipsFor("interrupted")[0]).toMatchObject({ text: "keep going", primary: true, action: "send" });
   });
 
   it("offers learned follow-ups after a finished turn", () => {
-    expect(chipsFor("finished", CONFIG, learned).map((chip) => chip.text)).toEqual([
+    expect(chipsFor("finished").map((chip) => chip.text)).toEqual([
       "write the docs",
       "ship the build",
       "progress?",
@@ -231,10 +241,7 @@ describe("chipsFor", () => {
 
   it("prefers the user's own follow-up list over learned ones", () => {
     const config = { ...CONFIG, afterDone: parseReplyLines("Deploy | deploy it") };
-    expect(chipsFor("finished", config, learned).map((chip) => chip.text)).toEqual([
-      "deploy it",
-      "progress?",
-    ]);
+    expect(chipsFor("finished", config).map((chip) => chip.text)).toEqual(["deploy it", "progress?"]);
   });
 
   it("falls back to generic follow-ups when nothing was learned", () => {
@@ -254,12 +261,103 @@ describe("chipsFor", () => {
     expect(chips.length).toBeLessThanOrEqual(QUICK_REPLY_FOLLOW_UPS + 1);
   });
 
-  it("shows only any-time chips while running or before any turn", () => {
-    expect(chipsFor("running", CONFIG, learned).map((chip) => chip.text)).toEqual(["progress?"]);
-    expect(chipsFor("unknown", CONFIG, learned).map((chip) => chip.text)).toEqual(["progress?"]);
+  it("shows only any-time chips before any turn", () => {
+    expect(chipsFor("unknown").map((chip) => chip.text)).toEqual(["progress?"]);
   });
 
   it("shows nothing while the agent waits on an answer", () => {
-    expect(chipsFor("waiting", CONFIG, learned)).toEqual([]);
+    expect(chipsFor("waiting")).toEqual([]);
+  });
+});
+
+describe("rowFor", () => {
+  // Every phrase here is invented demo text.
+  const config = {
+    afterStop: [{ label: "Continue", text: "continue" }],
+    afterDone: [],
+    anyTime: [{ label: "Status", text: "status" }],
+  };
+  const learned = [
+    { label: "Commit and push", text: "commit and push" },
+    { label: "Run the tests", text: "run the tests" },
+  ];
+  const replies = [
+    { label: "Open the PR", text: "open the PR now", kind: "answer" as const, why: "Answers it", best: true },
+    { label: "Show the diff", text: "show me the diff", kind: "ai" as const, why: "Not shown", best: false },
+  ];
+  const base = {
+    config,
+    learned,
+    snippets: [],
+    ai: { status: "idle" as const, replies: [] },
+    draft: "",
+    dismissed: new Set<string>(),
+  };
+
+  it("shows the usual chips while the model reads, with the card loading", () => {
+    const row = rowFor({ ...base, state: "finished", ai: { status: "pending", replies: [] } });
+    expect(row.mode).toBe("loading");
+    expect(row.spotlight).toBe(true);
+    expect(row.items.map((item) => item.label)).toEqual(["Commit and push", "Run the tests", "Status"]);
+  });
+
+  it("leads with the model's best pick once it lands", () => {
+    const row = rowFor({ ...base, state: "finished", ai: { status: "ready", replies } });
+    expect(row.mode).toBe("ai");
+    expect(row.items.map((item) => [item.label, item.best])).toEqual([
+      ["Open the PR", true],
+      ["Show the diff", false],
+      ["Status", false],
+    ]);
+    expect(defaultFocus(row.items)).toBe(0);
+  });
+
+  it("keeps Continue first after an interrupt and still offers the model's picks", () => {
+    const row = rowFor({ ...base, state: "interrupted", ai: { status: "ready", replies } });
+    expect(row.items[0]).toMatchObject({ label: "Continue", primary: true, best: false });
+    expect(defaultFocus(row.items)).toBe(1);
+  });
+
+  it("passes best to the next pick when the best one is dismissed", () => {
+    const row = rowFor({
+      ...base,
+      state: "finished",
+      ai: { status: "ready", replies },
+      dismissed: new Set(["open the pr now"]),
+    });
+    expect(row.items[0]).toMatchObject({ label: "Show the diff", best: true });
+  });
+
+  it("queues habits while the agent works and never asks the model there", () => {
+    const row = rowFor({ ...base, state: "running", ai: { status: "ready", replies } });
+    expect(row.mode).toBe("queue");
+    expect(row.items.map((item) => [item.label, item.action])).toEqual([
+      ["Commit and push", "queue"],
+      ["Run the tests", "queue"],
+      ["Status", "send"],
+    ]);
+  });
+
+  it("leads a failed turn with a retry", () => {
+    const row = rowFor({ ...base, state: "failed" });
+    expect(row.items[0]).toMatchObject({ label: "Continue", action: "retry", primary: true });
+  });
+
+  it("narrows to chips that complete the draft, never one that only repeats it", () => {
+    const row = rowFor({
+      ...base,
+      state: "finished",
+      ai: { status: "ready", replies },
+      learned: [...learned, { label: "Run", text: "run" }],
+      draft: "run",
+    });
+    expect(row.mode).toBe("filter");
+    expect(row.items.map((item) => [item.label, item.action, item.best])).toEqual([
+      ["Run the tests", "complete", true],
+    ]);
+  });
+
+  it("hides while the agent waits on an answer", () => {
+    expect(rowFor({ ...base, state: "waiting" }).mode).toBe("hidden");
   });
 });

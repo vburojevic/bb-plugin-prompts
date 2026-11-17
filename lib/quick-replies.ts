@@ -289,64 +289,227 @@ export interface QuickReplyConfig {
   anyTime: readonly QuickReply[];
 }
 
-export interface Chip extends QuickReply {
-  /** Leads the row: the chip the state calls for. */
-  primary: boolean;
-  /** Re-run the failed turn instead of sending text. */
-  retry: boolean;
-}
-
-/**
- * The chips for a state, in order: what the state calls for first, then the
- * any-time ones. A text shown twice keeps its first place.
- */
-export function chipsFor(
-  state: QuickReplyState,
-  config: QuickReplyConfig,
-  learned: readonly QuickReply[],
-): Chip[] {
-  const lead: Chip[] = [];
-  if (state === "failed" || state === "interrupted") {
-    config.afterStop.forEach((reply, index) =>
-      lead.push({
-        ...reply,
-        primary: index === 0,
-        // Only after a failure, and only the first chip: that is the one the
-        // owner picked to re-run the failed turn. An interrupt was on purpose;
-        // the next message is the user's to write, so it is sent as text.
-        retry: state === "failed" && index === 0,
-      }),
-    );
-  } else if (state === "finished") {
-    const source =
-      config.afterDone.length > 0
-        ? config.afterDone
-        : learned.length > 0
-          ? learned
-          : FALLBACK_FOLLOW_UPS;
-    for (const reply of source.slice(0, QUICK_REPLY_FOLLOW_UPS))
-      lead.push({ label: reply.label, text: reply.text, primary: false, retry: false });
-  } else if (state === "waiting") {
-    return [];
-  }
-
-  const out: Chip[] = [];
-  const seen = new Set<string>();
-  for (const chip of [
-    ...lead,
-    ...config.anyTime.map((reply) => ({ ...reply, primary: false, retry: false })),
-  ]) {
-    const key = replyKey(chip.text);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(chip);
-  }
-  return out;
-}
-
 /** A label cut to fit a chip; the full text belongs in the tooltip. */
 export function shortLabel(label: string): string {
   return label.length > QUICK_REPLY_LABEL_CHARS
     ? `${label.slice(0, QUICK_REPLY_LABEL_CHARS - 1).trimEnd()}…`
     : label;
+}
+
+// ---------------------------------------------------------------------------
+// The row with AI suggestions: what it shows in each moment.
+
+/** Where a chip came from; each kind has its own mark. */
+export type RowKind = "answer" | "ai" | "habit" | "snippet" | "any" | "retry";
+
+/**
+ * What a tap does. `send` sends (or joins a draft), `retry` re-runs the
+ * failed turn, `queue` waits in this plugin's queue for the turn to end,
+ * `complete` replaces the draft it matched, `fill` opens a snippet with
+ * fill-ins in the composer instead of sending it.
+ */
+export type RowAction = "send" | "retry" | "queue" | "complete" | "fill";
+
+export interface RowItem {
+  label: string;
+  text: string;
+  kind: RowKind;
+  /** Why it is there; empty for the user's own chips. */
+  why: string;
+  /** The model's best next step: the solid chip and the card's default. */
+  best: boolean;
+  /** Leads after a stop (Continue, retry): the accent outline. */
+  primary: boolean;
+  action: RowAction;
+}
+
+/**
+ * - `hidden`: the agent asked something; its answer form owns the composer.
+ * - `baseline`: the user's usual chips, no model involved.
+ * - `loading`: the usual chips while the model reads the thread.
+ * - `ai`: the model's picks.
+ * - `queue`: the agent is working; chips wait for the turn to end.
+ * - `filter`: chips that complete the draft.
+ * - `stopped`: a failed turn; Retry leads.
+ */
+export type RowMode = "hidden" | "baseline" | "loading" | "ai" | "queue" | "filter" | "stopped";
+
+export interface AiReplyLike {
+  label: string;
+  text: string;
+  kind: "answer" | "ai" | "habit" | "snippet";
+  why: string;
+  best: boolean;
+}
+
+export type AiStatus = "idle" | "off" | "empty" | "pending" | "ready" | "error";
+
+export interface RowInput {
+  state: QuickReplyState;
+  config: QuickReplyConfig;
+  learned: readonly QuickReply[];
+  snippets: readonly QuickReply[];
+  ai: { status: AiStatus; replies: readonly AiReplyLike[] };
+  draft: string;
+  /** Reply keys the user dismissed for this turn. */
+  dismissed: ReadonlySet<string>;
+}
+
+export interface Row {
+  mode: RowMode;
+  items: RowItem[];
+  /** Show the card above the chips: what the focused chip sends, and why. */
+  spotlight: boolean;
+}
+
+/** Habits shown while the agent works, before the any-time chips. */
+export const QUEUE_CHIPS = 4;
+
+const hasFillIns = (text: string) => /\{\{\s*[^}]+\}\}/.test(text);
+
+function item(
+  reply: QuickReply,
+  kind: RowKind,
+  action: RowAction,
+  extra: Partial<Pick<RowItem, "why" | "best" | "primary">> = {},
+): RowItem {
+  return {
+    label: reply.label,
+    text: reply.text,
+    kind,
+    why: extra.why ?? "",
+    best: extra.best ?? false,
+    primary: extra.primary ?? false,
+    action: kind === "snippet" && action === "send" && hasFillIns(reply.text) ? "fill" : action,
+  };
+}
+
+function dedupe(items: readonly RowItem[], dismissed: ReadonlySet<string>): RowItem[] {
+  const seen = new Set<string>();
+  const out: RowItem[] = [];
+  for (const entry of items) {
+    const key = replyKey(entry.text);
+    if (!key || seen.has(key) || dismissed.has(key)) continue;
+    seen.add(key);
+    out.push(entry);
+  }
+  return out;
+}
+
+/** The user's own chips after a finished turn: their list, else what they type most. */
+function usual(config: QuickReplyConfig, learned: readonly QuickReply[]): RowItem[] {
+  const source =
+    config.afterDone.length > 0 ? config.afterDone : learned.length > 0 ? learned : FALLBACK_FOLLOW_UPS;
+  const kind: RowKind = config.afterDone.length > 0 ? "any" : learned.length > 0 ? "habit" : "any";
+  return source.slice(0, QUICK_REPLY_FOLLOW_UPS).map((reply) => item(reply, kind, "send"));
+}
+
+function aiItems(replies: readonly AiReplyLike[]): RowItem[] {
+  return replies.map((reply) =>
+    item({ label: reply.label, text: reply.text }, reply.kind, "send", {
+      why: reply.why,
+      best: reply.best,
+    }),
+  );
+}
+
+/**
+ * The row for this moment: the chips in order, which one is the best next
+ * step, and whether the card above them shows. A pure function of what the
+ * row knows, so every state is testable without a browser.
+ */
+export function rowFor(input: RowInput): Row {
+  const { state, config, ai, dismissed } = input;
+  const anyTime = config.anyTime.map((reply) => item(reply, "any", "send"));
+  const aiReady = ai.status === "ready" && ai.replies.length > 0;
+
+  if (state === "waiting") return { mode: "hidden", items: [], spotlight: false };
+
+  if (state === "running") {
+    // The usual follow-ups, waiting for the turn to end; any-time chips
+    // (Status) still send at once.
+    const queued = usual(config, input.learned)
+      .slice(0, QUEUE_CHIPS)
+      .map((entry) => ({ ...entry, action: "queue" as const }));
+    return { mode: "queue", items: dedupe([...queued, ...anyTime], dismissed), spotlight: false };
+  }
+
+  // A draft narrows the row to chips that complete it.
+  const draft = input.draft.trim();
+  if (draft) {
+    const pool = dedupe(
+      [
+        ...(aiReady ? aiItems(ai.replies) : []),
+        ...input.learned.map((reply) => item(reply, "habit", "send")),
+        ...input.snippets.map((reply) => item(reply, "snippet", "send")),
+        ...config.anyTime.map((reply) => item(reply, "any", "send")),
+      ],
+      dismissed,
+    );
+    const matches = matchItems(pool, draft).slice(0, QUICK_REPLY_FOLLOW_UPS);
+    if (matches.length > 0)
+      return {
+        mode: "filter",
+        items: matches.map((entry, index) => ({
+          ...entry,
+          best: index === 0,
+          primary: false,
+          // Completing a draft never sends, so a snippet with fill-ins is safe too.
+          action: "complete",
+        })),
+        spotlight: true,
+      };
+  }
+
+  if (state === "failed") {
+    const lead = config.afterStop.map((reply, index) =>
+      item(reply, index === 0 ? "retry" : "any", index === 0 ? "retry" : "send", { primary: index === 0 }),
+    );
+    return { mode: "stopped", items: dedupe([...lead, ...anyTime], dismissed), spotlight: false };
+  }
+
+  if (state === "interrupted" || state === "finished") {
+    const lead =
+      state === "interrupted"
+        ? config.afterStop.slice(0, 1).map((reply) => item(reply, "any", "send", { primary: true }))
+        : [];
+    if (aiReady) {
+      const items = dedupe([...lead, ...aiItems(ai.replies), ...anyTime], dismissed);
+      // Dismissing the best one passes "best" to the next model pick.
+      if (!items.some((entry) => entry.best)) {
+        const next = items.find((entry) => entry.kind !== "any" && !entry.primary);
+        if (next) next.best = true;
+      }
+      return { mode: "ai", items, spotlight: items.some((entry) => entry.best) };
+    }
+    const items = dedupe([...lead, ...(state === "finished" ? usual(config, input.learned) : []), ...anyTime], dismissed);
+    return {
+      mode: ai.status === "pending" ? "loading" : "baseline",
+      items,
+      spotlight: ai.status === "pending",
+    };
+  }
+
+  return { mode: "baseline", items: dedupe(anyTime, dismissed), spotlight: false };
+}
+
+function matchItems(items: readonly RowItem[], draft: string): RowItem[] {
+  const needle = replyKey(draft);
+  if (!needle) return [];
+  const starts = (value: string) => {
+    const key = replyKey(value);
+    return key.startsWith(needle) || key.includes(` ${needle}`);
+  };
+  const prefix = items.filter(
+    (entry) => replyKey(entry.label).startsWith(needle) || replyKey(entry.text).startsWith(needle),
+  );
+  const word = items.filter((entry) => !prefix.includes(entry) && (starts(entry.label) || starts(entry.text)));
+  // A chip that only repeats the draft completes nothing.
+  return [...prefix, ...word].filter((entry) => replyKey(entry.text) !== needle);
+}
+
+/** The chip the card shows when nothing is hovered or focused. */
+export function defaultFocus(items: readonly RowItem[]): number {
+  const best = items.findIndex((entry) => entry.best);
+  return best === -1 ? 0 : best;
 }

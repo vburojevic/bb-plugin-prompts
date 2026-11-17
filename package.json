@@ -16,7 +16,7 @@
   },
   "bb": {
     "name": "Prompts",
-    "description": "Prompt queue + reusable snippets: stash prompts while agents work, inject or auto-send them when the agent goes idle, schedule sends, and keep a searchable snippet library with fill-in templates — including snippets it suggests from the prompts you keep retyping. Quick replies above the composer put Continue, Status and your usual follow-ups one tap away, fit to the thread's state. Queues are scoped to a thread, a project, or everywhere, and a thread's leftovers move to its project instead of vanishing with the thread.",
+    "description": "Prompt queue + reusable snippets: stash prompts while agents work, inject or auto-send them when the agent goes idle, schedule sends, and keep a searchable snippet library with fill-in templates — including snippets it suggests from the prompts you keep retyping. Quick replies above the composer suggest the next message from the thread itself, written by the thread's own provider with its fastest model and mixed with your usual follow-ups and snippets, one tap or one key away. Queues are scoped to a thread, a project, or everywhere, and a thread's leftovers move to its project instead of vanishing with the thread.",
     "branding": {
       "icon": "./assets/icon.svg"
     },

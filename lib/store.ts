@@ -8,6 +8,7 @@
 //             where a thread's leftovers land when the thread ends.
 // - global  — belongs to nothing; injectable anywhere.
 import { randomBytes } from "node:crypto";
+import { replyKey } from "./quick-replies";
 
 // Minimal structural type so we depend on neither better-sqlite3's types nor
 // the SDK's database wrapper — both satisfy it.
@@ -94,6 +95,18 @@ export const MIGRATIONS: string[] = [
     token TEXT PRIMARY KEY,
     value TEXT NOT NULL,
     updated_at INTEGER NOT NULL
+  )`,
+  // What the user did with each quick reply, per project: taps rank a reply
+  // up, dismissals rank it down and keep the model from suggesting it again.
+  // '' is "no project".
+  `CREATE TABLE IF NOT EXISTS quick_reply_feedback (
+    project_id TEXT NOT NULL,
+    key TEXT NOT NULL,
+    text TEXT NOT NULL,
+    taps INTEGER NOT NULL DEFAULT 0,
+    dismissals INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (project_id, key)
   )`,
 ];
 
@@ -820,6 +833,48 @@ export function createStore(db: Db, now: () => number = Date.now) {
     return out;
   }
 
+  function recordReplyFeedback(
+    projectId: string | null,
+    text: string,
+    action: "tap" | "dismiss",
+  ): void {
+    const key = replyKey(text);
+    if (!key) return;
+    const column = action === "tap" ? "taps" : "dismissals";
+    db.prepare(
+      `INSERT INTO quick_reply_feedback (project_id, key, text, taps, dismissals, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (project_id, key) DO UPDATE SET
+         ${column} = ${column} + 1, text = excluded.text, updated_at = excluded.updated_at`,
+    ).run(
+      projectId ?? "",
+      key,
+      text.slice(0, 2_000),
+      action === "tap" ? 1 : 0,
+      action === "dismiss" ? 1 : 0,
+      now(),
+    );
+  }
+
+  function replyFeedback(projectId: string | null): Map<string, { taps: number; dismissals: number }> {
+    const rows = db
+      .prepare(`SELECT key, taps, dismissals FROM quick_reply_feedback WHERE project_id = ?`)
+      .all(projectId ?? "") as { key: string; taps: number; dismissals: number }[];
+    return new Map(rows.map((row) => [row.key, { taps: row.taps, dismissals: row.dismissals }]));
+  }
+
+  /** Replies dismissed more often than tapped in this project, newest first. */
+  function dismissedReplies(projectId: string | null, limit = 20): string[] {
+    const rows = db
+      .prepare(
+        `SELECT text FROM quick_reply_feedback
+         WHERE project_id = ? AND dismissals > taps
+         ORDER BY updated_at DESC LIMIT ?`,
+      )
+      .all(projectId ?? "", limit) as { text: string }[];
+    return rows.map((row) => row.text);
+  }
+
   return {
     nextPosition,
     getPrompt,
@@ -859,6 +914,9 @@ export function createStore(db: Db, now: () => number = Date.now) {
     clearDismissedSuggestions,
     rememberFillValues,
     fillValuesFor,
+    recordReplyFeedback,
+    replyFeedback,
+    dismissedReplies,
   };
 }
 

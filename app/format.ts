@@ -20,7 +20,7 @@ export interface QueueScope {
 }
 
 export interface Signal {
-  topic: "queue" | "snippets" | "suggestions" | "native";
+  topic: "queue" | "snippets" | "suggestions" | "native" | "quick-replies";
   kind: "changed" | "send-failed" | "auto-sent" | "promoted";
   threadId: string | null;
   projectId: string | null;

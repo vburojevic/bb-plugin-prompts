@@ -46,7 +46,7 @@ export interface PromptsHost {
   sendQueuedMessage(threadId: string, queuedMessageId: string): Promise<void>;
 }
 
-export type SignalTopic = "queue" | "snippets" | "suggestions" | "native";
+export type SignalTopic = "queue" | "snippets" | "suggestions" | "native" | "quick-replies";
 export type SignalKind =
   | "changed"
   | "send-failed"
